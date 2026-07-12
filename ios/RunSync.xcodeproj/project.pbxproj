@@ -1,0 +1,553 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		1E64194CAFD9EA9F65DAD6BD /* TelemetryArchiveTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DDACF9883A96C5238EF974CE /* TelemetryArchiveTests.swift */; };
+		1F7DCF7A8AE629B0A304926B /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1F7C16FC662B17DA44A2241 /* AppModel.swift */; };
+		29601363205BBD5317B9160B /* ConnectIQ in Frameworks */ = {isa = PBXBuildFile; productRef = 6275F4FC155E44927AB807F6 /* ConnectIQ */; };
+		3ED7FD87CAE1A104B6F4181B /* GarminConnectionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADD9CEBB555713390DD0DF63 /* GarminConnectionService.swift */; };
+		4214EFC15F1698478C59CF7D /* MockTelemetrySinkTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB5439443815AD6436343AB9 /* MockTelemetrySinkTests.swift */; };
+		4CE4D02BB4383883C8E6B8B9 /* StatusView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99CF785E4751D95A8981A723 /* StatusView.swift */; };
+		5D969DB3FB39B4560CFDE8BA /* TelemetryArchive.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9E0016F04D6708B68AACFE7 /* TelemetryArchive.swift */; };
+		60887EF05F7A9831A7F129B0 /* TelemetryIngestor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 954C63E8F41FA6F870DB2178 /* TelemetryIngestor.swift */; };
+		641916E163140E61F677E5A5 /* RunSyncApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD872DFDF9B70E4A4D2870D6 /* RunSyncApp.swift */; };
+		7DBFAEE1CFA2F89C648E2513 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA63DC20F4050F9835C6F770 /* AppDelegate.swift */; };
+		92970150388CDA24D4F18C32 /* MockTelemetrySink.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C198DC4EF86C084138C8050 /* MockTelemetrySink.swift */; };
+		94CD03F488428A420266DAA3 /* AppContainer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7BFB512E13F88ADBD797A06 /* AppContainer.swift */; };
+		98CC80FBE3CB7B4268AF67C6 /* TelemetryIngestorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA9EFA6BA06955646EB0B732 /* TelemetryIngestorTests.swift */; };
+		9C42EBA9D51F1F7B0ABA28A2 /* GarminMessageDecoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7C199942795BA80101E373C /* GarminMessageDecoder.swift */; };
+		9E66D3F3C655B9261E1B48C9 /* InstallationIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8ABF818A8F4F91B856FD9CE /* InstallationIdentity.swift */; };
+		A10A139349DB0494692341AB /* GarminDeviceStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = E14AF65F90264E37651A6B68 /* GarminDeviceStore.swift */; };
+		BC4EDCCB445B6C752071E744 /* RunSyncConstants.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D93A8262578C64B96DD0087 /* RunSyncConstants.swift */; };
+		BDA5C5714CA5051AD96B7CFF /* TelemetryModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA3326F269F91955754DF3B0 /* TelemetryModels.swift */; };
+		C5013ECF5F5CE25C12234942 /* TelemetryTestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 712F06BB54EE1C132BD5A492 /* TelemetryTestSupport.swift */; };
+		E5032E35A636B2DF60DD5D57 /* GarminMessageDecoderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E4C6837D1633457EAAFE10F6 /* GarminMessageDecoderTests.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		4CA4364FF89820CE0291431E /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 128CC6B6C0EC8072FC71CC7B /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A4D7374A2C0B901CB3CEE3DA;
+			remoteInfo = RunSync;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		5BAC5B3553FDF557FF5C2B75 /* RunSyncTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = RunSyncTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		5D93A8262578C64B96DD0087 /* RunSyncConstants.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunSyncConstants.swift; sourceTree = "<group>"; };
+		6681F488A9A55EFD4DC0868A /* RunSync.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = RunSync.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		712F06BB54EE1C132BD5A492 /* TelemetryTestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TelemetryTestSupport.swift; sourceTree = "<group>"; };
+		8C198DC4EF86C084138C8050 /* MockTelemetrySink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockTelemetrySink.swift; sourceTree = "<group>"; };
+		954C63E8F41FA6F870DB2178 /* TelemetryIngestor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TelemetryIngestor.swift; sourceTree = "<group>"; };
+		99CF785E4751D95A8981A723 /* StatusView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusView.swift; sourceTree = "<group>"; };
+		A7C199942795BA80101E373C /* GarminMessageDecoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GarminMessageDecoder.swift; sourceTree = "<group>"; };
+		AD872DFDF9B70E4A4D2870D6 /* RunSyncApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunSyncApp.swift; sourceTree = "<group>"; };
+		ADD9CEBB555713390DD0DF63 /* GarminConnectionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GarminConnectionService.swift; sourceTree = "<group>"; };
+		B7BFB512E13F88ADBD797A06 /* AppContainer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppContainer.swift; sourceTree = "<group>"; };
+		C1F7C16FC662B17DA44A2241 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
+		CA63DC20F4050F9835C6F770 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		D9E0016F04D6708B68AACFE7 /* TelemetryArchive.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TelemetryArchive.swift; sourceTree = "<group>"; };
+		DA9EFA6BA06955646EB0B732 /* TelemetryIngestorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TelemetryIngestorTests.swift; sourceTree = "<group>"; };
+		DDACF9883A96C5238EF974CE /* TelemetryArchiveTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TelemetryArchiveTests.swift; sourceTree = "<group>"; };
+		E14AF65F90264E37651A6B68 /* GarminDeviceStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GarminDeviceStore.swift; sourceTree = "<group>"; };
+		E4C6837D1633457EAAFE10F6 /* GarminMessageDecoderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GarminMessageDecoderTests.swift; sourceTree = "<group>"; };
+		E8ABF818A8F4F91B856FD9CE /* InstallationIdentity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InstallationIdentity.swift; sourceTree = "<group>"; };
+		EA3326F269F91955754DF3B0 /* TelemetryModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TelemetryModels.swift; sourceTree = "<group>"; };
+		EB5439443815AD6436343AB9 /* MockTelemetrySinkTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockTelemetrySinkTests.swift; sourceTree = "<group>"; };
+		FD25EF5246E1BE25EC344643 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		31B358B7DBA9AAF5BD35A5B5 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				29601363205BBD5317B9160B /* ConnectIQ in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		32D7708DB621ABFFC1C336C8 /* Garmin */ = {
+			isa = PBXGroup;
+			children = (
+				ADD9CEBB555713390DD0DF63 /* GarminConnectionService.swift */,
+				E14AF65F90264E37651A6B68 /* GarminDeviceStore.swift */,
+			);
+			path = Garmin;
+			sourceTree = "<group>";
+		};
+		3BAEE0A2DCC7DE8514C0FB3F /* UI */ = {
+			isa = PBXGroup;
+			children = (
+				99CF785E4751D95A8981A723 /* StatusView.swift */,
+			);
+			path = UI;
+			sourceTree = "<group>";
+		};
+		4ECF1519A3045837E4986424 /* Storage */ = {
+			isa = PBXGroup;
+			children = (
+				E8ABF818A8F4F91B856FD9CE /* InstallationIdentity.swift */,
+				D9E0016F04D6708B68AACFE7 /* TelemetryArchive.swift */,
+			);
+			path = Storage;
+			sourceTree = "<group>";
+		};
+		5082DB3BB68F3DFB58EC6986 /* RunSync */ = {
+			isa = PBXGroup;
+			children = (
+				FD25EF5246E1BE25EC344643 /* Info.plist */,
+				B9223C300890F8CDAEC31BAE /* App */,
+				32D7708DB621ABFFC1C336C8 /* Garmin */,
+				9B5D9C2993CB72AF361E05EB /* MockIngest */,
+				4ECF1519A3045837E4986424 /* Storage */,
+				7E85B864CC14562FFDBF27F0 /* Telemetry */,
+				3BAEE0A2DCC7DE8514C0FB3F /* UI */,
+			);
+			path = RunSync;
+			sourceTree = "<group>";
+		};
+		6333260F05D884FF97C3B37A /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				6681F488A9A55EFD4DC0868A /* RunSync.app */,
+				5BAC5B3553FDF557FF5C2B75 /* RunSyncTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		7E85B864CC14562FFDBF27F0 /* Telemetry */ = {
+			isa = PBXGroup;
+			children = (
+				A7C199942795BA80101E373C /* GarminMessageDecoder.swift */,
+				954C63E8F41FA6F870DB2178 /* TelemetryIngestor.swift */,
+				EA3326F269F91955754DF3B0 /* TelemetryModels.swift */,
+			);
+			path = Telemetry;
+			sourceTree = "<group>";
+		};
+		9B5D9C2993CB72AF361E05EB /* MockIngest */ = {
+			isa = PBXGroup;
+			children = (
+				8C198DC4EF86C084138C8050 /* MockTelemetrySink.swift */,
+			);
+			path = MockIngest;
+			sourceTree = "<group>";
+		};
+		A0D1258DFFDE6EC1CD5B8C23 = {
+			isa = PBXGroup;
+			children = (
+				5082DB3BB68F3DFB58EC6986 /* RunSync */,
+				A29573D8B12D1F8F7131A4FA /* RunSyncTests */,
+				6333260F05D884FF97C3B37A /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		A29573D8B12D1F8F7131A4FA /* RunSyncTests */ = {
+			isa = PBXGroup;
+			children = (
+				E4C6837D1633457EAAFE10F6 /* GarminMessageDecoderTests.swift */,
+				EB5439443815AD6436343AB9 /* MockTelemetrySinkTests.swift */,
+				DDACF9883A96C5238EF974CE /* TelemetryArchiveTests.swift */,
+				DA9EFA6BA06955646EB0B732 /* TelemetryIngestorTests.swift */,
+				712F06BB54EE1C132BD5A492 /* TelemetryTestSupport.swift */,
+			);
+			path = RunSyncTests;
+			sourceTree = "<group>";
+		};
+		B9223C300890F8CDAEC31BAE /* App */ = {
+			isa = PBXGroup;
+			children = (
+				B7BFB512E13F88ADBD797A06 /* AppContainer.swift */,
+				CA63DC20F4050F9835C6F770 /* AppDelegate.swift */,
+				C1F7C16FC662B17DA44A2241 /* AppModel.swift */,
+				AD872DFDF9B70E4A4D2870D6 /* RunSyncApp.swift */,
+				5D93A8262578C64B96DD0087 /* RunSyncConstants.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		A4D7374A2C0B901CB3CEE3DA /* RunSync */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 084E6802B3803E0206F04683 /* Build configuration list for PBXNativeTarget "RunSync" */;
+			buildPhases = (
+				68B57F9816DB54DBF280104A /* Sources */,
+				31B358B7DBA9AAF5BD35A5B5 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = RunSync;
+			packageProductDependencies = (
+				6275F4FC155E44927AB807F6 /* ConnectIQ */,
+			);
+			productName = RunSync;
+			productReference = 6681F488A9A55EFD4DC0868A /* RunSync.app */;
+			productType = "com.apple.product-type.application";
+		};
+		FADA12979BB1F19F7E2CE9B9 /* RunSyncTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 470A0C1FF2C7F93917B1A941 /* Build configuration list for PBXNativeTarget "RunSyncTests" */;
+			buildPhases = (
+				A7A0E7CACC18736DB3676700 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				B24A1027F74FD56EBB6BE749 /* PBXTargetDependency */,
+			);
+			name = RunSyncTests;
+			packageProductDependencies = (
+			);
+			productName = RunSyncTests;
+			productReference = 5BAC5B3553FDF557FF5C2B75 /* RunSyncTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		128CC6B6C0EC8072FC71CC7B /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 2600;
+				TargetAttributes = {
+					A4D7374A2C0B901CB3CEE3DA = {
+						DevelopmentTeam = W6MVZPAS4Y;
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = 5DB5F397A377251D6E7A9A89 /* Build configuration list for PBXProject "RunSync" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = A0D1258DFFDE6EC1CD5B8C23;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				AB88151358F00783E491842B /* XCRemoteSwiftPackageReference "connectiq-companion-app-sdk-ios" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 6333260F05D884FF97C3B37A /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				A4D7374A2C0B901CB3CEE3DA /* RunSync */,
+				FADA12979BB1F19F7E2CE9B9 /* RunSyncTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		68B57F9816DB54DBF280104A /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				94CD03F488428A420266DAA3 /* AppContainer.swift in Sources */,
+				7DBFAEE1CFA2F89C648E2513 /* AppDelegate.swift in Sources */,
+				1F7DCF7A8AE629B0A304926B /* AppModel.swift in Sources */,
+				3ED7FD87CAE1A104B6F4181B /* GarminConnectionService.swift in Sources */,
+				A10A139349DB0494692341AB /* GarminDeviceStore.swift in Sources */,
+				9C42EBA9D51F1F7B0ABA28A2 /* GarminMessageDecoder.swift in Sources */,
+				9E66D3F3C655B9261E1B48C9 /* InstallationIdentity.swift in Sources */,
+				92970150388CDA24D4F18C32 /* MockTelemetrySink.swift in Sources */,
+				641916E163140E61F677E5A5 /* RunSyncApp.swift in Sources */,
+				BC4EDCCB445B6C752071E744 /* RunSyncConstants.swift in Sources */,
+				4CE4D02BB4383883C8E6B8B9 /* StatusView.swift in Sources */,
+				5D969DB3FB39B4560CFDE8BA /* TelemetryArchive.swift in Sources */,
+				60887EF05F7A9831A7F129B0 /* TelemetryIngestor.swift in Sources */,
+				BDA5C5714CA5051AD96B7CFF /* TelemetryModels.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A7A0E7CACC18736DB3676700 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E5032E35A636B2DF60DD5D57 /* GarminMessageDecoderTests.swift in Sources */,
+				4214EFC15F1698478C59CF7D /* MockTelemetrySinkTests.swift in Sources */,
+				1E64194CAFD9EA9F65DAD6BD /* TelemetryArchiveTests.swift in Sources */,
+				98CC80FBE3CB7B4268AF67C6 /* TelemetryIngestorTests.swift in Sources */,
+				C5013ECF5F5CE25C12234942 /* TelemetryTestSupport.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		B24A1027F74FD56EBB6BE749 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A4D7374A2C0B901CB3CEE3DA /* RunSync */;
+			targetProxy = 4CA4364FF89820CE0291431E /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		0BDE08F50388688C8FC1664E /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		2221FDFC59C606C3EB23E782 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = W6MVZPAS4Y;
+				INFOPLIST_FILE = RunSync/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				OTHER_LDFLAGS = "$(inherited) -ObjC";
+				PRODUCT_BUNDLE_IDENTIFIER = com.jakobevangelista.runsync;
+				PRODUCT_NAME = RunSync;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		52E09BDB129DABF5021BD420 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		BDB88FFE84F1229FD9DFC42A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.jakobevangelista.runsync.tests;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/RunSync.app/RunSync";
+			};
+			name = Release;
+		};
+		C611AB6B59AB024F13C6CA6C /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.jakobevangelista.runsync.tests;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/RunSync.app/RunSync";
+			};
+			name = Debug;
+		};
+		C6C0B136DE4C67AD95966C85 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = W6MVZPAS4Y;
+				INFOPLIST_FILE = RunSync/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				OTHER_LDFLAGS = "$(inherited) -ObjC";
+				PRODUCT_BUNDLE_IDENTIFIER = com.jakobevangelista.runsync;
+				PRODUCT_NAME = RunSync;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		084E6802B3803E0206F04683 /* Build configuration list for PBXNativeTarget "RunSync" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C6C0B136DE4C67AD95966C85 /* Debug */,
+				2221FDFC59C606C3EB23E782 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		470A0C1FF2C7F93917B1A941 /* Build configuration list for PBXNativeTarget "RunSyncTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C611AB6B59AB024F13C6CA6C /* Debug */,
+				BDB88FFE84F1229FD9DFC42A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		5DB5F397A377251D6E7A9A89 /* Build configuration list for PBXProject "RunSync" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				52E09BDB129DABF5021BD420 /* Debug */,
+				0BDE08F50388688C8FC1664E /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		AB88151358F00783E491842B /* XCRemoteSwiftPackageReference "connectiq-companion-app-sdk-ios" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/garmin/connectiq-companion-app-sdk-ios";
+			requirement = {
+				kind = exactVersion;
+				version = 1.8.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		6275F4FC155E44927AB807F6 /* ConnectIQ */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AB88151358F00783E491842B /* XCRemoteSwiftPackageReference "connectiq-companion-app-sdk-ios" */;
+			productName = ConnectIQ;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 128CC6B6C0EC8072FC71CC7B /* Project object */;
+}

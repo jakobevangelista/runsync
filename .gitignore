@@ -1,0 +1,11 @@
+# Xcode user state and local build products
+xcuserdata/
+*.xcuserstate
+DerivedData/
+
+# Garmin build output and private signing keys
+watch/bin/
+*.der
+
+# macOS
+.DS_Store
