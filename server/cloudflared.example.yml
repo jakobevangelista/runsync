@@ -1,0 +1,7 @@
+# Alternative to the managed-tunnel token used by compose.yaml.
+tunnel: replace-with-tunnel-uuid
+credentials-file: /run/secrets/cloudflared_credentials.json
+ingress:
+  - hostname: runsync-api.example.com
+    service: http://caddy:8080
+  - service: http_status:404

@@ -9,3 +9,9 @@ watch/bin/
 
 # macOS
 .DS_Store
+
+# Local server configuration and secrets
+.env
+secrets/
+server/coverage.out
+server/runsync

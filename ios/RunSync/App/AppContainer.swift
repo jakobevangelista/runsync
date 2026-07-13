@@ -10,13 +10,18 @@ final class AppContainer {
     private init() {
         let model = AppModel()
         let archive = TelemetryArchive()
-        let sink = MockTelemetrySink()
+        let configuration = ServerConfigurationStore()
+        let sink = HTTPTelemetrySink(configuration: configuration)
         let ingestor = TelemetryIngestor(
             archive: archive,
             sink: sink,
             installationID: InstallationIdentity.loadOrCreate()
         )
         self.model = model
-        self.garmin = GarminConnectionService(model: model, ingestor: ingestor)
+        self.garmin = GarminConnectionService(
+            model: model,
+            ingestor: ingestor,
+            serverConfiguration: configuration
+        )
     }
 }

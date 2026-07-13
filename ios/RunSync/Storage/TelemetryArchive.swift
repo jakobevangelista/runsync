@@ -29,7 +29,7 @@ actor TelemetryArchive {
     func appendAcknowledgements(_ identifiers: [UUID], runID: UUID) throws {
         guard !identifiers.isEmpty else { return }
         let directory = try prepareRunDirectory(runID)
-        let fileURL = directory.appendingPathComponent("mock-acks.ndjson")
+        let fileURL = directory.appendingPathComponent("server-acks.ndjson")
         for identifier in identifiers {
             var data = Data("{\"id\":\"\(identifier.uuidString)\"}".utf8)
             data.append(0x0A)
@@ -40,18 +40,21 @@ actor TelemetryArchive {
     func envelopes(runID: UUID) throws -> [TelemetryEnvelope] {
         let fileURL = runDirectory(runID).appendingPathComponent("samples.ndjson")
         guard fileManager.fileExists(atPath: fileURL.path) else { return [] }
-        return try completeLines(in: Data(contentsOf: fileURL)).map { try decoder.decode(TelemetryEnvelope.self, from: $0) }
+        return completeLines(in: try Data(contentsOf: fileURL)).compactMap {
+            try? decoder.decode(TelemetryEnvelope.self, from: $0)
+        }
     }
 
     func acknowledgedIDs(runID: UUID) throws -> Set<UUID> {
-        let fileURL = runDirectory(runID).appendingPathComponent("mock-acks.ndjson")
-        guard fileManager.fileExists(atPath: fileURL.path) else { return [] }
-
         struct Acknowledgement: Decodable { let id: UUID }
-        let values = try completeLines(in: Data(contentsOf: fileURL)).map {
-            try decoder.decode(Acknowledgement.self, from: $0).id
+        var values: Set<UUID> = []
+        let fileURL = runDirectory(runID).appendingPathComponent("server-acks.ndjson")
+        guard fileManager.fileExists(atPath: fileURL.path) else { return [] }
+        let identifiers = completeLines(in: try Data(contentsOf: fileURL)).compactMap {
+            try? decoder.decode(Acknowledgement.self, from: $0).id
         }
-        return Set(values)
+        values.formUnion(identifiers)
+        return values
     }
 
     func pendingEnvelopes() throws -> [TelemetryEnvelope] {
@@ -102,11 +105,33 @@ actor TelemetryArchive {
             }
         }
 
-        let handle = try FileHandle(forWritingTo: fileURL)
+        let handle = try FileHandle(forUpdating: fileURL)
         defer { try? handle.close() }
+        try truncatePartialTail(handle)
         try handle.seekToEnd()
         try handle.write(contentsOf: data)
         try handle.synchronize()
+    }
+
+    private func truncatePartialTail(_ handle: FileHandle) throws {
+        let end = try handle.seekToEnd()
+        guard end > 0 else { return }
+        try handle.seek(toOffset: end - 1)
+        if try handle.read(upToCount: 1)?.first == 0x0A { return }
+
+        var offset = end
+        let chunkSize: UInt64 = 4_096
+        while offset > 0 {
+            let start = offset > chunkSize ? offset - chunkSize : 0
+            try handle.seek(toOffset: start)
+            let chunk = try handle.read(upToCount: Int(offset - start)) ?? Data()
+            if let newline = chunk.lastIndex(of: 0x0A) {
+                try handle.truncate(atOffset: start + UInt64(newline) + 1)
+                return
+            }
+            offset = start
+        }
+        try handle.truncate(atOffset: 0)
     }
 
     private func completeLines(in data: Data) -> [Data] {

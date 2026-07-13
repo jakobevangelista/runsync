@@ -4,6 +4,7 @@ import SwiftUI
 struct RunSyncApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var model = AppContainer.shared.model
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
@@ -13,6 +14,9 @@ struct RunSyncApp: App {
                         url,
                         sourceApplication: nil
                     )
+                }
+                .onChange(of: scenePhase) { _, phase in
+                    if phase == .active { AppContainer.shared.garmin.retryUploads() }
                 }
         }
     }

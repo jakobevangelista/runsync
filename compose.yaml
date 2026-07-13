@@ -1,0 +1,93 @@
+name: runsync
+services:
+  postgres:
+    image: postgres:18.3-alpine3.23
+    environment:
+      POSTGRES_DB: runsync
+      POSTGRES_USER: runsync
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets: [postgres_password]
+    volumes: [postgres_data:/var/lib/postgresql]
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U runsync -d runsync"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [backend]
+    restart: unless-stopped
+  migrate:
+    build: {context: ./server}
+    command: [migrate]
+    environment:
+      RUNSYNC_DATABASE_URL: ${RUNSYNC_DATABASE_URL:?set RUNSYNC_DATABASE_URL}
+    depends_on:
+      postgres: {condition: service_healthy}
+    networks: [backend]
+    profiles: [migration]
+  backup:
+    image: postgres:18.3-alpine3.23
+    entrypoint: [/bin/sh, -ec]
+    command:
+      - |
+        export PGPASSWORD="$$(cat /run/secrets/postgres_password)"
+        pg_dump --host=postgres --username=runsync --dbname=runsync --format=custom --file="/backups/runsync-$$(date -u +%Y%m%dT%H%M%SZ).dump"
+    secrets: [postgres_password]
+    volumes:
+      - ${RUNSYNC_BACKUP_PATH:-./backups}:/backups
+    depends_on:
+      postgres: {condition: service_healthy}
+    networks: [backend]
+    profiles: [backup]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+  api:
+    build: {context: ./server}
+    read_only: true
+    tmpfs: [/tmp]
+    environment:
+      RUNSYNC_HTTP_ADDRESS: :8080
+      RUNSYNC_DATABASE_URL: ${RUNSYNC_DATABASE_URL:?set RUNSYNC_DATABASE_URL}
+      RUNSYNC_PUBLIC_BASE_URL: ${RUNSYNC_PUBLIC_BASE_URL:?set RUNSYNC_PUBLIC_BASE_URL}
+      RUNSYNC_ALLOWED_ORIGINS: ${RUNSYNC_ALLOWED_ORIGINS:-}
+      RUNSYNC_VIEWER_TOKEN_SIGNING_KEY: ${RUNSYNC_VIEWER_TOKEN_SIGNING_KEY:?set RUNSYNC_VIEWER_TOKEN_SIGNING_KEY}
+      RUNSYNC_LOG_LEVEL: ${RUNSYNC_LOG_LEVEL:-info}
+      # Safe by default because the API is reachable only on the internal backend network.
+      RUNSYNC_TRUSTED_PROXY_CIDRS: ${RUNSYNC_TRUSTED_PROXY_CIDRS:-10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7}
+    depends_on:
+      postgres: {condition: service_healthy}
+    networks: [backend]
+    restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+  caddy:
+    image: caddy:2.10.2-alpine
+    command: [caddy, run, --config, /etc/caddy/Caddyfile, --adapter, caddyfile]
+    read_only: true
+    tmpfs: [/config, /data]
+    volumes:
+      - ./server/Caddyfile:/etc/caddy/Caddyfile:ro
+    depends_on: [api]
+    networks: [edge, backend]
+    restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+  cloudflared:
+    image: cloudflare/cloudflared:2026.6.0
+    command: [tunnel, --no-autoupdate, run, --token-file, /run/secrets/cloudflare_tunnel_token]
+    read_only: true
+    secrets: [cloudflare_tunnel_token]
+    depends_on: [caddy]
+    networks: [edge]
+    restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+networks:
+  edge: {}
+  backend: {internal: true}
+volumes:
+  postgres_data: {}
+secrets:
+  postgres_password:
+    file: ${RUNSYNC_POSTGRES_PASSWORD_FILE:-./secrets/postgres_password}
+  cloudflare_tunnel_token:
+    file: ${RUNSYNC_CLOUDFLARE_TOKEN_FILE:-./secrets/cloudflare_tunnel_token}

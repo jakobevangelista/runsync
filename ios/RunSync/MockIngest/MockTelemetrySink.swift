@@ -4,7 +4,7 @@ enum MockSinkFailure: Error {
     case injected
 }
 
-actor MockTelemetrySink {
+actor MockTelemetrySink: TelemetrySink {
     private var acceptedIDs: Set<UUID> = []
     private var shouldFail = false
     private let latencyNanoseconds: UInt64

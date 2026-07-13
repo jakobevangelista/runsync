@@ -10,14 +10,18 @@ final class AppModel: ObservableObject {
     @Published var fieldStatus = "Unknown"
     @Published var activityStatus = "Waiting"
     @Published var archiveStatus = "Ready"
-    @Published var mockStatus = "Ready"
+    @Published var serverStatus = "Not configured"
+    @Published var serverBaseURL = ""
+    @Published var serverTokenConfigured = false
+    @Published var serverConfigurationStatus = ""
+    @Published var pendingUploadCount = 0
+    @Published var lastUploadAt: Date?
+    @Published var lastAcknowledgementAt: Date?
     @Published var lastSampleAt: Date?
     @Published var currentRunID: UUID?
     @Published var receivedCount = 0
     @Published var invalidMessageCount = 0
     @Published var archiveFailureCount = 0
-    @Published var mockFailureCount = 0
-    @Published var mockFailureInjection = false
     @Published var captureEnabled = false
     @Published var diagnosticEvents: [String] = []
 
@@ -34,7 +38,7 @@ final class AppModel: ObservableObject {
         currentRunID = result.envelope.localRunID
         activityStatus = result.envelope.sample.state.label
         archiveStatus = "Healthy"
-        mockStatus = "Current"
+        updateServerStatus(result.serverStatus)
         if receivedCount == 1 || receivedCount.isMultiple(of: 10) {
             record("Received telemetry q=\(result.envelope.sample.sequence), total=\(receivedCount)")
         }
@@ -47,13 +51,8 @@ final class AppModel: ObservableObject {
 
     func ingestFailed(_ error: Error) {
         record("Ingest failed: \(String(describing: error))")
-        if error is MockSinkFailure {
-            mockFailureCount += 1
-            mockStatus = "Injected failure"
-        } else {
-            archiveFailureCount += 1
-            archiveStatus = "Write error"
-        }
+        archiveFailureCount += 1
+        archiveStatus = "Write error"
     }
 
     func telemetryDeleted() {
@@ -62,7 +61,17 @@ final class AppModel: ObservableObject {
         receivedCount = 0
         activityStatus = "Waiting"
         archiveStatus = "Ready"
-        mockStatus = "Ready"
+        serverStatus = "Not configured"
+        pendingUploadCount = 0
+        lastUploadAt = nil
+        lastAcknowledgementAt = nil
         record("Deleted local telemetry")
+    }
+
+    func updateServerStatus(_ status: ServerUploadStatus) {
+        serverStatus = status.state
+        pendingUploadCount = status.pendingCount
+        lastUploadAt = status.lastUploadAt
+        lastAcknowledgementAt = status.lastAcknowledgementAt
     }
 }

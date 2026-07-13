@@ -7,14 +7,21 @@ final class GarminConnectionService: NSObject {
     private let model: AppModel
     private let ingestor: TelemetryIngestor
     private let deviceStore: GarminDeviceStore
+    private let serverConfiguration: ServerConfigurationStore?
     private let connectIQ = ConnectIQ.sharedInstance()!
     private var devicesByID: [UUID: IQDevice] = [:]
     private var appsByDeviceID: [UUID: IQApp] = [:]
 
-    init(model: AppModel, ingestor: TelemetryIngestor, deviceStore: GarminDeviceStore = GarminDeviceStore()) {
+    init(
+        model: AppModel,
+        ingestor: TelemetryIngestor,
+        deviceStore: GarminDeviceStore = GarminDeviceStore(),
+        serverConfiguration: ServerConfigurationStore? = nil
+    ) {
         self.model = model
         self.ingestor = ingestor
         self.deviceStore = deviceStore
+        self.serverConfiguration = serverConfiguration
         super.init()
     }
 
@@ -29,7 +36,15 @@ final class GarminConnectionService: NSObject {
         model.record("Restored \(devicesByID.count) authorized device(s)")
         Task { [weak self, ingestor] in
             do {
-                try await ingestor.recoverPending()
+                let status = try await ingestor.recoverPending()
+                let configurationState = await self?.serverConfiguration?.displayState()
+                await MainActor.run {
+                    self?.model.updateServerStatus(status)
+                    if let configurationState {
+                        self?.model.serverBaseURL = configurationState.baseURL
+                        self?.model.serverTokenConfigured = configurationState.tokenConfigured
+                    }
+                }
             } catch {
                 await MainActor.run { self?.model.ingestFailed(error) }
             }
@@ -74,9 +89,32 @@ final class GarminConnectionService: NSObject {
         return true
     }
 
-    func setMockFailureInjection(_ enabled: Bool) {
-        model.mockFailureInjection = enabled
-        Task { await ingestor.setMockFailureInjection(enabled) }
+    func saveServerConfiguration(baseURL: String, token: String) {
+        guard let serverConfiguration else { return }
+        Task { [weak self, ingestor] in
+            do {
+                try await serverConfiguration.save(baseURL: baseURL, token: token.isEmpty ? nil : token)
+                let state = await serverConfiguration.displayState()
+                let status = await ingestor.configurationChanged(
+                    configured: !state.baseURL.isEmpty && state.tokenConfigured
+                )
+                await MainActor.run {
+                    self?.model.serverBaseURL = state.baseURL
+                    self?.model.serverTokenConfigured = state.tokenConfigured
+                    self?.model.serverConfigurationStatus = "Saved"
+                    self?.model.updateServerStatus(status)
+                }
+            } catch {
+                await MainActor.run { self?.model.serverConfigurationStatus = "Invalid URL or token" }
+            }
+        }
+    }
+
+    func retryUploads(force: Bool = false) {
+        Task { [weak self, ingestor] in
+            let status = await ingestor.retryPending(force: force)
+            await MainActor.run { self?.model.updateServerStatus(status) }
+        }
     }
 
     func setCaptureEnabled(_ enabled: Bool) {

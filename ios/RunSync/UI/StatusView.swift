@@ -3,6 +3,7 @@ import SwiftUI
 struct StatusView: View {
     @ObservedObject var model: AppModel
     let garmin: GarminConnectionService
+    @State private var ingestToken = ""
 
     var body: some View {
         NavigationStack {
@@ -12,6 +13,7 @@ struct StatusView: View {
                     statusGrid
                     instructions
                     controls
+                    serverConfiguration
                     diagnostics
                 }
                 .padding(20)
@@ -52,8 +54,10 @@ struct StatusView: View {
             statusCell("Watch", model.watchStatus)
             statusCell("Data field", model.fieldStatus)
             statusCell("Archive", model.archiveStatus)
-            statusCell("Mock ingest", model.mockStatus)
+            statusCell("Server", model.serverStatus)
             statusCell("Received", "\(model.receivedCount)")
+            statusCell("Pending upload", "\(model.pendingUploadCount)")
+            statusCell("Last ack", relativeDate(model.lastAcknowledgementAt))
         }
     }
 
@@ -91,13 +95,46 @@ struct StatusView: View {
             }
             .frame(maxWidth: .infinity)
 
-#if DEBUG
-            Toggle("Inject mock ingest failure", isOn: Binding(
-                get: { model.mockFailureInjection },
-                set: { garmin.setMockFailureInjection($0) }
-            ))
-#endif
         }
+        .padding(18)
+        .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 18))
+    }
+
+    private var serverConfiguration: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Telemetry server").font(.headline)
+            TextField("https://runsync-api.example.com", text: $model.serverBaseURL)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .keyboardType(.URL)
+                .textFieldStyle(.roundedBorder)
+            SecureField(model.serverTokenConfigured ? "Token saved (leave blank to keep)" : "Ingest token", text: $ingestToken)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .textFieldStyle(.roundedBorder)
+            HStack {
+                Button("Save") {
+                    garmin.saveServerConfiguration(baseURL: model.serverBaseURL, token: ingestToken)
+                    ingestToken = ""
+                }
+                .buttonStyle(.borderedProminent)
+                Button("Retry now") { garmin.retryUploads(force: true) }
+                    .buttonStyle(.bordered)
+                Button("Remove", role: .destructive) {
+                    model.serverBaseURL = ""
+                    ingestToken = ""
+                    garmin.saveServerConfiguration(baseURL: "", token: "")
+                }
+                .buttonStyle(.bordered)
+            }
+            if !model.serverConfigurationStatus.isEmpty {
+                Text(model.serverConfigurationStatus).font(.caption).foregroundStyle(.secondary)
+            }
+            Text("Last upload: \(relativeDate(model.lastUploadAt)). Credentials and location are never written to diagnostics.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(18)
         .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 18))
     }
@@ -143,4 +180,9 @@ struct StatusView: View {
     }
 
     private var lastSampleAt: Date? { model.lastSampleAt }
+
+    private func relativeDate(_ date: Date?) -> String {
+        guard let date else { return "Never" }
+        return date.formatted(date: .abbreviated, time: .shortened)
+    }
 }

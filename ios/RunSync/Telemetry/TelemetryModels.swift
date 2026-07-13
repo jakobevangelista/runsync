@@ -56,4 +56,19 @@ struct TelemetryEnvelope: Codable, Equatable, Identifiable, Sendable {
 struct IngestResult: Sendable {
     let envelope: TelemetryEnvelope
     let acknowledgedIDs: [UUID]
+    let serverStatus: ServerUploadStatus
+}
+
+struct ServerUploadStatus: Equatable, Sendable {
+    var state: String
+    var pendingCount: Int
+    var lastUploadAt: Date?
+    var lastAcknowledgementAt: Date?
+
+    static let notConfigured = ServerUploadStatus(
+        state: "Not configured",
+        pendingCount: 0,
+        lastUploadAt: nil,
+        lastAcknowledgementAt: nil
+    )
 }
