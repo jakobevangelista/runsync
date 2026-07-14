@@ -17,7 +17,7 @@ export const Route = createRootRoute({
       },
       {
         name: "referrer",
-        content: "no-referrer",
+        content: "strict-origin-when-cross-origin",
       },
     ],
     links: [

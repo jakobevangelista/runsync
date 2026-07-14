@@ -21,3 +21,25 @@ export function requestIP(request: Request) {
     "unknown"
   );
 }
+
+export function isSameOrigin(request: Request) {
+  const fetchSite = request.headers.get("sec-fetch-site");
+  if (fetchSite && fetchSite !== "same-origin") return false;
+  const origin = request.headers.get("origin");
+  if (!origin) return true;
+
+  const internalUrl = new URL(request.url);
+  const protocol =
+    firstForwarded(request, "x-forwarded-proto") ?? internalUrl.protocol.slice(0, -1);
+  const host =
+    firstForwarded(request, "x-forwarded-host") ?? request.headers.get("host") ?? internalUrl.host;
+  try {
+    return new URL(origin).origin === new URL(`${protocol}://${host}`).origin;
+  } catch {
+    return false;
+  }
+}
+
+function firstForwarded(request: Request, name: string) {
+  return request.headers.get(name)?.split(",")[0]?.trim() || undefined;
+}

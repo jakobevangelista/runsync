@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { getServerConfig } from "../lib/config.server";
-import { allowSession, requestIP } from "../lib/rate-limit.server";
+import { allowSession, isSameOrigin, requestIP } from "../lib/rate-limit.server";
 import { createLiveSession, redactSessionForLog } from "../lib/session.server";
 
 const noStore = { "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" };
@@ -30,10 +30,3 @@ export const Route = createFileRoute("/api/live/$overlayId/session")({
     },
   },
 });
-
-function isSameOrigin(request: Request) {
-  const fetchSite = request.headers.get("sec-fetch-site");
-  if (fetchSite && fetchSite !== "same-origin") return false;
-  const origin = request.headers.get("origin");
-  return !origin || origin === new URL(request.url).origin;
-}
