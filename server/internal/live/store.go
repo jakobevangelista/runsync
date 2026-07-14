@@ -14,6 +14,8 @@ import (
 
 var ErrNotFound = errors.New("channel not found")
 
+const maxRoutePoints = 5000
+
 type Channel struct {
 	ID, UserID                uuid.UUID
 	Slug, DisplayName, Policy string
@@ -71,10 +73,40 @@ type Snapshot struct {
 	ServerTime                  time.Time    `json:"serverTime"`
 }
 
+type RoutePoint struct {
+	EnvelopeID            uuid.UUID `json:"envelopeId"`
+	PhoneReceivedAt       time.Time `json:"phoneReceivedAt"`
+	LatitudeMicrodegrees  int       `json:"latitudeMicrodegrees"`
+	LongitudeMicrodegrees int       `json:"longitudeMicrodegrees"`
+	GPSQuality            *int16    `json:"gpsQuality,omitempty"`
+}
+
+type Route struct {
+	ChannelID      uuid.UUID    `json:"channelId"`
+	ActivityID     *uuid.UUID   `json:"activityId"`
+	LocationPolicy string       `json:"locationPolicy"`
+	Points         []RoutePoint `json:"points"`
+	ServerTime     time.Time    `json:"serverTime"`
+}
+
 func (s *Store) Snapshot(ctx context.Context, c Channel, now time.Time) (Snapshot, error) {
 	out := Snapshot{ChannelID: c.ID, Slug: c.Slug, ActivityID: c.ActivityID, Status: "offline", Route: []SampleView{}, ServerTime: now}
 	if c.ActivityID == nil {
 		return out, nil
+	}
+	latest, err := scanView(s.pool.QueryRow(ctx, `SELECT envelope_id,phone_received_at,server_received_at,protocol_version,watch_sequence,activity_state,garmin_activity_start_epoch_seconds,elapsed_time_milliseconds,distance_decimeters,speed_millimeters_per_second,heart_rate_bpm,cadence_rpm,latitude_microdegrees,longitude_microdegrees,gps_quality,altitude_decimeters,total_ascent_meters FROM telemetry_samples WHERE user_id=$1 AND activity_id=$2 ORDER BY phone_received_at DESC,ingest_cursor DESC LIMIT 1`, c.UserID, *c.ActivityID))
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return out, err
+	}
+	if err == nil {
+		applyPolicy(&latest, c.Policy, c.Decimals)
+		out.Latest = &latest
+		age := now.Sub(latest.PhoneReceivedAt).Milliseconds()
+		if age < 0 {
+			age = 0
+		}
+		out.LatestSampleAgeMilliseconds = &age
+		out.Status = stateName(latest.State)
 	}
 	rows, err := s.pool.Query(ctx, `SELECT envelope_id,phone_received_at,server_received_at,protocol_version,watch_sequence,activity_state,garmin_activity_start_epoch_seconds,elapsed_time_milliseconds,distance_decimeters,speed_millimeters_per_second,heart_rate_bpm,cadence_rpm,latitude_microdegrees,longitude_microdegrees,gps_quality,altitude_decimeters,total_ascent_meters FROM telemetry_samples WHERE user_id=$1 AND activity_id=$2 AND phone_received_at >= $3 ORDER BY phone_received_at DESC,ingest_cursor DESC LIMIT 500`, c.UserID, *c.ActivityID, now.Add(-30*time.Minute))
 	if err != nil {
@@ -87,16 +119,6 @@ func (s *Store) Snapshot(ctx context.Context, c Channel, now time.Time) (Snapsho
 			return out, err
 		}
 		applyPolicy(&v, c.Policy, c.Decimals)
-		if out.Latest == nil {
-			x := v
-			out.Latest = &x
-			age := now.Sub(v.PhoneReceivedAt).Milliseconds()
-			if age < 0 {
-				age = 0
-			}
-			out.LatestSampleAgeMilliseconds = &age
-			out.Status = stateName(v.State)
-		}
 		out.Route = append(out.Route, v)
 	}
 	for i, j := 0, len(out.Route)-1; i < j; i, j = i+1, j-1 {
@@ -105,17 +127,63 @@ func (s *Store) Snapshot(ctx context.Context, c Channel, now time.Time) (Snapsho
 	return out, rows.Err()
 }
 
-func (s *Store) Replay(ctx context.Context, c Channel, last uuid.UUID, limit int) ([]SampleView, bool, error) {
-	if c.ActivityID == nil {
-		return nil, false, nil
+func (s *Store) Route(ctx context.Context, c Channel, now time.Time) (Route, error) {
+	out := Route{ChannelID: c.ID, ActivityID: c.ActivityID, LocationPolicy: c.Policy, Points: []RoutePoint{}, ServerTime: now}
+	if c.ActivityID == nil || c.Policy == "hidden" {
+		return out, nil
 	}
+	rows, err := s.pool.Query(ctx, `SELECT envelope_id,phone_received_at,latitude_microdegrees,longitude_microdegrees,gps_quality FROM telemetry_samples WHERE user_id=$1 AND activity_id=$2 AND latitude_microdegrees IS NOT NULL AND longitude_microdegrees IS NOT NULL ORDER BY phone_received_at,ingest_cursor`, c.UserID, *c.ActivityID)
+	if err != nil {
+		return out, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var point RoutePoint
+		if err := rows.Scan(&point.EnvelopeID, &point.PhoneReceivedAt, &point.LatitudeMicrodegrees, &point.LongitudeMicrodegrees, &point.GPSQuality); err != nil {
+			return out, err
+		}
+		if c.Policy == "rounded" && c.Decimals != nil {
+			roundValue(&point.LatitudeMicrodegrees, *c.Decimals)
+			roundValue(&point.LongitudeMicrodegrees, *c.Decimals)
+		}
+		out.Points = append(out.Points, point)
+	}
+	if err := rows.Err(); err != nil {
+		return out, err
+	}
+	out.Points = downsample(out.Points, maxRoutePoints)
+	return out, nil
+}
+
+func downsample(points []RoutePoint, limit int) []RoutePoint {
+	if limit <= 0 {
+		return []RoutePoint{}
+	}
+	if len(points) <= limit {
+		return points
+	}
+	if limit == 1 {
+		return points[:1]
+	}
+	out := make([]RoutePoint, limit)
+	for i := range out {
+		out[i] = points[i*(len(points)-1)/(limit-1)]
+	}
+	return out
+}
+
+func (s *Store) Replay(ctx context.Context, c Channel, last uuid.UUID, limit int) ([]SampleView, bool, error) {
 	var cursor int64
-	err := s.pool.QueryRow(ctx, `SELECT ingest_cursor FROM telemetry_samples WHERE envelope_id=$1 AND user_id=$2`, last, c.UserID).Scan(&cursor)
+	var activityID uuid.UUID
+	err := s.pool.QueryRow(ctx, `SELECT ingest_cursor,activity_id FROM telemetry_samples WHERE envelope_id=$1 AND user_id=$2`, last, c.UserID).Scan(&cursor, &activityID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, true, nil
 	}
 	if err != nil {
 		return nil, false, err
+	}
+	if c.ActivityID == nil || activityID != *c.ActivityID {
+		return nil, true, nil
 	}
 	rows, err := s.pool.Query(ctx, `SELECT envelope_id,phone_received_at,server_received_at,protocol_version,watch_sequence,activity_state,garmin_activity_start_epoch_seconds,elapsed_time_milliseconds,distance_decimeters,speed_millimeters_per_second,heart_rate_bpm,cadence_rpm,latitude_microdegrees,longitude_microdegrees,gps_quality,altitude_decimeters,total_ascent_meters FROM telemetry_samples WHERE user_id=$1 AND activity_id=$2 AND ingest_cursor>$3 ORDER BY ingest_cursor LIMIT $4`, c.UserID, *c.ActivityID, cursor, limit+1)
 	if err != nil {
@@ -172,9 +240,11 @@ func round(value **int, decimals int16) {
 	if *value == nil {
 		return
 	}
+	roundValue(*value, decimals)
+}
+func roundValue(value *int, decimals int16) {
 	factor := math.Pow10(6 - int(decimals))
-	v := int(math.Round(float64(**value)/factor) * factor)
-	*value = &v
+	*value = int(math.Round(float64(*value)/factor) * factor)
 }
 func stateName(v int16) string {
 	switch v {

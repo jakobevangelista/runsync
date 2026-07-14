@@ -25,7 +25,7 @@ type Config struct {
 }
 
 func Load() (Config, error) {
-	databaseURL, err := secret("RUNSYNC_DATABASE_URL")
+	databaseURL, err := DatabaseURL()
 	if err != nil {
 		return Config{}, err
 	}
@@ -71,6 +71,10 @@ func Load() (Config, error) {
 		c.DatabaseMaxConns = int32(n)
 	}
 	return c, nil
+}
+
+func DatabaseURL() (string, error) {
+	return secret("RUNSYNC_DATABASE_URL")
 }
 
 func env(k, fallback string) string {

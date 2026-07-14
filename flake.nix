@@ -1,24 +1,38 @@
 {
   description = "RunSync repository development tools";
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-  outputs = { self, nixpkgs }:
+  outputs =
+    { self, nixpkgs }:
     let
-      systems = [ "aarch64-darwin" "x86_64-darwin" "aarch64-linux" "x86_64-linux" ];
+      systems = [
+        "aarch64-darwin"
+        "x86_64-darwin"
+        "aarch64-linux"
+        "x86_64-linux"
+      ];
       eachSystem = f: nixpkgs.lib.genAttrs systems (system: f (import nixpkgs { inherit system; }));
-    in {
+    in
+    {
       devShells = eachSystem (pkgs: {
         default = pkgs.mkShell {
-          packages = with pkgs; [
-            (if builtins.hasAttr "go_1_26" pkgs then pkgs.go_1_26 else pkgs.go)
-            postgresql_18
-            caddy
-            cloudflared
-            golangci-lint
-            gotools
-            govulncheck
-          ]
-          ++ pkgs.lib.optionals (builtins.hasAttr "staticcheck" pkgs) [ pkgs.staticcheck ]
-          ++ pkgs.lib.optionals (pkgs.stdenv.isDarwin && builtins.hasAttr "xcodegen" pkgs) [ pkgs.xcodegen ];
+          packages =
+            with pkgs;
+            [
+              (if builtins.hasAttr "go_1_26" pkgs then pkgs.go_1_26 else pkgs.go)
+              nodejs_24
+              pnpm_11
+              postgresql_18
+              caddy
+              cloudflared
+              golangci-lint
+              gotools
+              govulncheck
+            ]
+            ++ pkgs.lib.optionals (builtins.hasAttr "staticcheck" pkgs) [ pkgs.staticcheck ]
+            ++ pkgs.lib.optionals (pkgs.stdenv.isDarwin && builtins.hasAttr "xcodegen" pkgs) [ pkgs.xcodegen ];
+          shellHook = ''
+            export PATH="$PWD/web/node_modules/.bin:$PATH"
+          '';
         };
       });
       formatter = eachSystem (pkgs: pkgs.nixfmt);

@@ -11,7 +11,7 @@ This plan includes:
 - the Go API and PostgreSQL schema;
 - Docker, Caddy, Cloudflare Tunnel, backups, and operations;
 - iOS production upload and durable acknowledgement behavior;
-- the read API and live-stream contract needed by a future Vercel/TanStack Start frontend;
+- the read API and live-stream contract needed by a TanStack Start frontend;
 - tests and staged acceptance criteria.
 
 This plan does not include implementation of the web frontend.
@@ -28,8 +28,8 @@ The following decisions are fixed for the first implementation:
 - The primary read use case is a near-live run dashboard and browser-source overlay.
 - The API should add only milliseconds of live-stream latency. End-to-end latency is measured rather than promised because Garmin BLE, iOS suspension, cellular scheduling, and retries are not deterministic.
 - Precise coordinates are stored. A server-side live-channel policy decides whether viewers receive precise, rounded, or no coordinates.
-- Long-lived iOS ingest and Vercel read credentials are separate and scope-limited.
-- A TanStack Start server route may hold the Vercel read credential. It can exchange that credential for short-lived, channel-scoped viewer tokens so browsers can connect directly to the live stream without exposing a permanent secret.
+- Long-lived iOS ingest and frontend read credentials are separate and scope-limited.
+- A TanStack Start server route may hold the frontend read credential. It can exchange that credential for short-lived, channel-scoped viewer tokens so browsers can connect directly to the live stream without exposing a permanent secret.
 - The homelab is exposed through an outbound Cloudflare Tunnel because inbound port 443 cannot be forwarded.
 - Caddy is bundled initially but must be replaceable by a shared Caddy instance without changing the API image.
 
@@ -46,7 +46,7 @@ Garmin watch
   -> Go API
   -> PostgreSQL 18
 
-Vercel / TanStack Start server
+TanStack Start server
   -> long-lived read service credential
   -> short-lived viewer-token exchange and authenticated history reads
 
@@ -145,7 +145,7 @@ revoked_at timestamptz null
 Initial scopes:
 
 - `telemetry:write` for the iOS installation;
-- `channels:read` for the Vercel server;
+- `channels:read` for the TanStack Start server;
 - `channels:manage` for future channel settings;
 - `activities:read` and `activities:delete` for future authenticated history UI.
 
@@ -385,13 +385,13 @@ The future frontend needs a contract now, even though its implementation is defe
 
 ### 7.1 Service authentication
 
-The TanStack Start server stores a long-lived `channels:read` credential in Vercel environment variables. Server-side history and configuration requests use the bearer token directly. It must never be serialized into HTML, JavaScript bundles, browser logs, or query parameters.
+The TanStack Start server stores a long-lived `channels:read` credential in its server-only runtime secret store. Server-side history and configuration requests use the bearer token directly. It must never be serialized into HTML, JavaScript bundles, browser logs, or query parameters.
 
 ### 7.2 Viewer-token exchange
 
 ```http
 POST /v1/viewer-tokens
-Authorization: Bearer <vercel-read-token>
+Authorization: Bearer <frontend-read-token>
 ```
 
 Request a channel slug and desired lifetime. Return a signed token with:
@@ -404,7 +404,7 @@ Request a channel slug and desired lifetime. Return a signed token with:
 
 The browser may receive this short-lived token. Its compromise cannot write telemetry, read other channels, increase coordinate precision, or survive expiry. The frontend refreshes it through its authenticated TanStack server route.
 
-Use the `Authorization` header with a streaming `fetch` client. Do not put bearer tokens in URLs. Configure CORS with an explicit allowlist for the production Vercel origin and local development origins; never combine credentialed access with wildcard origins.
+Use the `Authorization` header with a streaming `fetch` client. Do not put bearer tokens in URLs. Configure CORS with an explicit allowlist for the production frontend origin and local development origins; never combine credentialed access with wildcard origins.
 
 ### 7.3 Snapshot
 
@@ -469,7 +469,7 @@ Precise live location is sensitive even for a personal service.
 - Store coordinates only after the existing explicit iOS privacy opt-in.
 - Keep precise coordinates in PostgreSQL because the owner wants future configurable display precision.
 - Enforce the channel's location policy in every read serializer, including snapshot, replay, SSE, and history.
-- Treat Vercel as a trusted service only when it uses its long-lived server credential. Browser responses remain disclosures to the viewer.
+- Treat the TanStack Start server as a trusted service only when it uses its long-lived server credential. Browser responses remain disclosures to the viewer.
 - Do not log coordinates, request bodies, bearer tokens, viewer tokens, or complete authorization headers.
 - Preserve an auditable `hidden` option that omits coordinate fields entirely.
 - Make location-policy changes apply to future reads immediately; no rewritten telemetry is required.
@@ -524,7 +524,7 @@ The server stores both `phoneReceivedAt` and its own `serverReceivedAt`. Request
 
 The tunnel makes the hostname internet-reachable even though no home port is forwarded. Authentication and limits remain mandatory.
 
-- Use independent random credentials for iOS ingestion and Vercel reads.
+- Use independent random credentials for iOS ingestion and frontend reads.
 - Compare token digests in constant time.
 - Scope every database query by authenticated `user_id` in addition to resource ID.
 - Support credential revocation and rotation without changing user or installation IDs.
@@ -597,15 +597,15 @@ Validate all configuration at startup and fail fast. Expected settings include:
 
 ```text
 RUNSYNC_HTTP_ADDRESS
-RUNSYNC_DATABASE_URL or discrete database secret settings
+RUNSYNC_DATABASE_URL_FILE (preferred) or RUNSYNC_DATABASE_URL
 RUNSYNC_PUBLIC_BASE_URL
 RUNSYNC_ALLOWED_ORIGINS
-RUNSYNC_VIEWER_TOKEN_SIGNING_KEY
+RUNSYNC_VIEWER_TOKEN_SIGNING_KEY_FILE (preferred) or RUNSYNC_VIEWER_TOKEN_SIGNING_KEY
 RUNSYNC_LOG_LEVEL
 RUNSYNC_TRUSTED_PROXY_CIDRS
 ```
 
-Secrets must be read from files or environment values injected at deployment, never committed `.env` files. Add repository ignore rules before creating local secret files.
+Secrets must be read from files or environment values injected at deployment, never committed `.env` files. Compose uses the file variants for the database URL and viewer signing key. Add repository ignore rules before creating local secret files.
 
 ## 12. Database Operations
 
@@ -713,7 +713,7 @@ Run `go test -race ./...` and static analysis in CI. Use an actual disposable Po
 ### 14.3 End-to-end tests
 
 1. Start the complete Compose stack against PostgreSQL 18.
-2. Bootstrap owner, iOS credential, Vercel service credential, and channel.
+2. Bootstrap owner, iOS credential, frontend service credential, and channel.
 3. Submit fixture envelopes and retry them.
 4. Verify database rows and exact acknowledgements.
 5. Obtain a viewer token, load snapshot, and observe committed SSE events.
@@ -788,7 +788,7 @@ Current status:
 ### Milestone 8: frontend planning
 
 - Use the measured API behavior to plan the TanStack Start site and OBS browser-source overlay.
-- Keep the long-lived read credential in Vercel server-only configuration.
+- Keep the long-lived read credential in TanStack Start server-only configuration.
 - Exchange it for short-lived viewer tokens and use snapshot plus streaming `fetch` in the browser.
 - Define history and analytics screens only after the live overlay works.
 
@@ -810,7 +810,7 @@ The server phase is complete when:
 - PostgreSQL and the API origin are not directly exposed to the internet;
 - an encrypted off-host backup can be restored successfully;
 - foreground and locked-screen tests report measured delivery and latency rather than claiming guaranteed real-time behavior;
-- the API has no dependency on Redis, ClickHouse, TimescaleDB, or Vercel runtime behavior.
+- the API has no dependency on Redis, ClickHouse, TimescaleDB, or any frontend hosting runtime.
 
 ## 17. Deferred Decisions
 

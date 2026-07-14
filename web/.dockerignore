@@ -1,0 +1,8 @@
+node_modules
+.output
+.vite
+coverage
+.env*
+*.local
+README.md
+tests

@@ -100,7 +100,6 @@ func (s *Store) Ingest(ctx context.Context, p auth.Principal, b telemetry.Batch,
 			return result, err
 		}
 		if authoritative {
-			result.Transitions = append(result.Transitions, latest)
 			if latest.Envelope.Sample.State == 1 && (attach == nil || latest.Envelope.PhoneReceivedAt.After(attach.Envelope.PhoneReceivedAt) || (latest.Envelope.PhoneReceivedAt.Equal(attach.Envelope.PhoneReceivedAt) && latest.IngestCursor > attach.IngestCursor)) {
 				candidate := latest
 				attach = &candidate
@@ -108,9 +107,12 @@ func (s *Store) Ingest(ctx context.Context, p auth.Principal, b telemetry.Batch,
 		}
 	}
 	if attach != nil {
-		_, err = tx.Exec(ctx, `UPDATE live_channels c SET active_activity_id=$1,updated_at=$2 WHERE c.user_id=$3 AND (c.active_activity_id IS NULL OR EXISTS (SELECT 1 FROM activities active WHERE active.id=c.active_activity_id AND (active.last_phone_received_at,active.latest_ingest_cursor)<($4,$5)))`, attach.Envelope.ActivityID, now, p.UserID, attach.Envelope.PhoneReceivedAt, attach.IngestCursor)
-		if err != nil {
-			return result, err
+		tag, updateErr := tx.Exec(ctx, `UPDATE live_channels c SET active_activity_id=$1,updated_at=$2 WHERE c.user_id=$3 AND (c.active_activity_id IS NULL OR EXISTS (SELECT 1 FROM activities active WHERE active.id=c.active_activity_id AND (active.last_phone_received_at,active.latest_ingest_cursor)<($4,$5)))`, attach.Envelope.ActivityID, now, p.UserID, attach.Envelope.PhoneReceivedAt, attach.IngestCursor)
+		if updateErr != nil {
+			return result, updateErr
+		}
+		if tag.RowsAffected() > 0 {
+			result.Transitions = append(result.Transitions, *attach)
 		}
 	}
 	rows, err := tx.Query(ctx, `SELECT id,active_activity_id FROM live_channels WHERE user_id=$1 AND active_activity_id=ANY($2) ORDER BY id`, p.UserID, activityIDs(newByActivity))

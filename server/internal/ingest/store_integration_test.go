@@ -68,8 +68,12 @@ func TestIdempotencyConflictAndSequenceSemantics(t *testing.T) {
 		t.Fatalf("conflict: %v", err)
 	}
 	outOfOrder := telemetry.Batch{InstallationID: installation, Envelopes: []telemetry.Envelope{makeEnvelope(uuid.New(), 5), makeEnvelope(uuid.New(), 1)}}
-	if _, err = store.Ingest(ctx, p, outOfOrder, now); err != nil {
+	outOfOrderResult, err := store.Ingest(ctx, p, outOfOrder, now)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if len(outOfOrderResult.Transitions) != 0 {
+		t.Fatal("ordinary samples produced an activity transition")
 	}
 	var count int
 	if err = pool.QueryRow(ctx, `SELECT sample_count FROM activities WHERE id=$1`, activity).Scan(&count); err != nil || count != 3 {
@@ -156,6 +160,13 @@ func TestIdempotencyConflictAndSequenceSemantics(t *testing.T) {
 	}
 	if len(multi.Channels[activity]) != 0 || len(multi.Channels[activityB]) != 1 {
 		t.Fatalf("channel mappings do not reflect final activity: %#v", multi.Channels)
+	}
+	if len(multi.Transitions) != 1 || multi.Transitions[0].Envelope.ActivityID != activityB {
+		t.Fatalf("channel switch transitions=%#v", multi.Transitions)
+	}
+	channel.ActivityID = &activityB
+	if replayed, reset, err = liveStore.Replay(ctx, channel, newerA.EnvelopeID, 10); err != nil || !reset || len(replayed) != 0 {
+		t.Fatalf("cross-activity replay: items=%v reset=%v err=%v", replayed, reset, err)
 	}
 
 	staleEnd := makeForActivity(activityB, now.Add(39*time.Second), 4)

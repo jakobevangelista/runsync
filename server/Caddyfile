@@ -11,10 +11,24 @@
 :8080 {
 	header {
 		X-Content-Type-Options nosniff
-		Referrer-Policy no-referrer
+		Permissions-Policy "camera=(), geolocation=(), microphone=()"
+		X-Frame-Options DENY
 		-Server
 	}
-	reverse_proxy api:8080 {
-		flush_interval -1
+
+	@api host {$RUNSYNC_API_HOST}
+	handle @api {
+		header Referrer-Policy no-referrer
+		reverse_proxy api:8080 {
+			flush_interval -1
+		}
 	}
+
+	@web host {$RUNSYNC_WEB_HOST}
+	handle @web {
+		header Referrer-Policy strict-origin-when-cross-origin
+		reverse_proxy web:3000
+	}
+
+	respond 404
 }

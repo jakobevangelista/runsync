@@ -12,6 +12,7 @@ watch/bin/
 
 # Local server configuration and secrets
 .env
+.env.local
 secrets/
 server/coverage.out
 server/runsync

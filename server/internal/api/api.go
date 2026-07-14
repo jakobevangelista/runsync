@@ -46,6 +46,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/telemetry/batches", s.batch)
 	mux.HandleFunc("POST /v1/viewer-tokens", s.viewerToken)
 	mux.HandleFunc("GET /v1/channels/{slug}/snapshot", s.snapshot)
+	mux.HandleFunc("GET /v1/channels/{slug}/route", s.route)
 	mux.HandleFunc("GET /v1/channels/{slug}/stream", s.stream)
 	return s.cors(s.logging(mux))
 }
@@ -95,17 +96,20 @@ func (s *Server) batch(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	for _, event := range result.Events {
-		for _, channel := range result.Channels[event.Envelope.ActivityID] {
-			s.hub.Publish(channel, live.Message{Kind: "sample", Event: event})
-		}
-	}
+	s.publishIngest(result)
+	writeJSON(w, 200, map[string]any{"acknowledgedEnvelopeIds": result.Acknowledged, "serverTime": now})
+}
+func (s *Server) publishIngest(result ingest.Result) {
 	for _, event := range result.Transitions {
 		for _, channel := range result.Channels[event.Envelope.ActivityID] {
 			s.hub.Publish(channel, live.Message{Kind: "activity", Event: event})
 		}
 	}
-	writeJSON(w, 200, map[string]any{"acknowledgedEnvelopeIds": result.Acknowledged, "serverTime": now})
+	for _, event := range result.Events {
+		for _, channel := range result.Channels[event.Envelope.ActivityID] {
+			s.hub.Publish(channel, live.Message{Kind: "sample", Event: event})
+		}
+	}
 }
 
 type viewerRequest struct {
@@ -114,6 +118,7 @@ type viewerRequest struct {
 }
 
 func (s *Server) viewerToken(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	p, ok := s.serviceAuth(w, r, "channels:read")
 	if !ok {
 		return
@@ -148,31 +153,10 @@ func (s *Server) viewerToken(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 201, map[string]any{"token": token, "expiresAt": time.Unix(claims.ExpiresAt, 0).UTC()})
 }
 func (s *Server) snapshot(w http.ResponseWriter, r *http.Request) {
-	slug := r.PathValue("slug")
-	var c live.Channel
-	if token := bearer(r); strings.HasPrefix(token, "rs_") {
-		p, ok := s.authenticate(w, r, token, "channels:read")
-		if !ok {
-			return
-		}
-		var err error
-		c, err = s.live.Channel(r.Context(), p.UserID, slug)
-		if err != nil {
-			s.channelError(w, err)
-			return
-		}
-	} else {
-		claims, err := auth.VerifyViewer(s.key, token, time.Now())
-		if err != nil || claims.Slug != slug {
-			unauthorized(w)
-			return
-		}
-		c, err = s.live.Channel(r.Context(), claims.UserID, slug)
-		if err != nil || c.ID != claims.ChannelID {
-			unauthorized(w)
-			return
-		}
-		clampChannel(&c, claims)
+	w.Header().Set("Cache-Control", "no-store")
+	c, ok := s.readChannel(w, r)
+	if !ok {
+		return
 	}
 	out, err := s.live.Snapshot(r.Context(), c, time.Now().UTC())
 	if err != nil {
@@ -180,6 +164,48 @@ func (s *Server) snapshot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, out)
+}
+func (s *Server) route(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	c, ok := s.readChannel(w, r)
+	if !ok {
+		return
+	}
+	out, err := s.live.Route(r.Context(), c, time.Now().UTC())
+	if err != nil {
+		s.logger.Error("route lookup failed", "error", err)
+		writeError(w, 500, "internal_error", "internal server error")
+		return
+	}
+	writeJSON(w, 200, out)
+}
+func (s *Server) readChannel(w http.ResponseWriter, r *http.Request) (live.Channel, bool) {
+	slug := r.PathValue("slug")
+	token := bearer(r)
+	if strings.HasPrefix(token, "rs_") {
+		p, ok := s.authenticate(w, r, token, "channels:read")
+		if !ok {
+			return live.Channel{}, false
+		}
+		c, err := s.live.Channel(r.Context(), p.UserID, slug)
+		if err != nil {
+			s.channelError(w, err)
+			return live.Channel{}, false
+		}
+		return c, true
+	}
+	claims, err := auth.VerifyViewer(s.key, token, time.Now())
+	if err != nil || claims.Slug != slug {
+		unauthorized(w)
+		return live.Channel{}, false
+	}
+	c, err := s.live.Channel(r.Context(), claims.UserID, slug)
+	if err != nil || c.ID != claims.ChannelID {
+		unauthorized(w)
+		return live.Channel{}, false
+	}
+	clampChannel(&c, claims)
+	return c, true
 }
 func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 	claims, err := auth.VerifyViewer(s.key, bearer(r), time.Now())

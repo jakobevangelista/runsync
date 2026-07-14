@@ -7,6 +7,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/google/uuid"
+	"github.com/jakobevangelista/runsync/server/internal/ingest"
+	"github.com/jakobevangelista/runsync/server/internal/live"
+	"github.com/jakobevangelista/runsync/server/internal/telemetry"
 )
 
 func TestHealthAndCORS(t *testing.T) {
@@ -43,5 +48,30 @@ func TestDecodeRejectsOversizeAndUnknown(t *testing.T) {
 				t.Fatalf("status=%d", w.Code)
 			}
 		})
+	}
+}
+
+func TestPublishIngestSendsTransitionBeforeSamples(t *testing.T) {
+	channelID, activityID := uuid.New(), uuid.New()
+	transition := telemetry.Event{Envelope: telemetry.Envelope{EnvelopeID: uuid.New(), ActivityID: activityID}}
+	sample := telemetry.Event{Envelope: telemetry.Envelope{EnvelopeID: uuid.New(), ActivityID: activityID}}
+	s := &Server{hub: live.NewHub(3)}
+	sub := s.hub.Subscribe(channelID)
+	defer sub.Close()
+
+	s.publishIngest(ingest.Result{
+		Events:      []telemetry.Event{transition, sample},
+		Transitions: []telemetry.Event{transition},
+		Channels:    map[uuid.UUID][]uuid.UUID{activityID: {channelID}},
+	})
+
+	for i, want := range []struct {
+		kind string
+		id   uuid.UUID
+	}{{"activity", transition.Envelope.EnvelopeID}, {"sample", transition.Envelope.EnvelopeID}, {"sample", sample.Envelope.EnvelopeID}} {
+		message := <-sub.C
+		if message.Kind != want.kind || message.Event.Envelope.EnvelopeID != want.id {
+			t.Fatalf("message %d = %s/%s, want %s/%s", i, message.Kind, message.Event.Envelope.EnvelopeID, want.kind, want.id)
+		}
 	}
 }

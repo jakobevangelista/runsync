@@ -47,10 +47,13 @@ func run(args []string) error {
 	}
 }
 func usage() error {
-	return errors.New("usage: runsync serve|migrate|admin bootstrap-owner|admin create-credential|admin revoke-credential")
+	return errors.New("usage: runsync serve|migrate|admin bootstrap-owner|admin configure-channel|admin create-credential|admin revoke-credential")
 }
 func withPool(fn func(context.Context, *pgxpool.Pool) error) error {
-	url := os.Getenv("RUNSYNC_DATABASE_URL")
+	url, err := config.DatabaseURL()
+	if err != nil {
+		return err
+	}
 	if url == "" {
 		return errors.New("RUNSYNC_DATABASE_URL is required")
 	}
@@ -99,7 +102,13 @@ func admin(args []string) error {
 		handle := fs.String("handle", "owner", "owner handle")
 		slug := fs.String("channel-slug", "live", "stable channel slug")
 		name := fs.String("channel-name", "RunSync Live", "channel display name")
+		policy := fs.String("location-policy", "hidden", "hidden, precise, or rounded")
+		decimals := fs.Int("coordinate-decimals", -1, "0..6 for rounded location")
 		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		coordinateDecimals, err := validateLocationPolicy(*policy, *decimals)
+		if err != nil {
 			return err
 		}
 		return withPool(func(ctx context.Context, p *pgxpool.Pool) error {
@@ -116,7 +125,7 @@ func admin(args []string) error {
 			if tag.RowsAffected() == 0 {
 				return fmt.Errorf("owner %q already exists", *handle)
 			}
-			if _, err = tx.Exec(ctx, `INSERT INTO live_channels(id,user_id,slug,display_name,location_policy) VALUES($1,$2,$3,$4,'hidden')`, uuid.New(), id, *slug, *name); err != nil {
+			if _, err = tx.Exec(ctx, `INSERT INTO live_channels(id,user_id,slug,display_name,location_policy,coordinate_decimals) VALUES($1,$2,$3,$4,$5,$6)`, uuid.New(), id, *slug, *name, *policy, coordinateDecimals); err != nil {
 				return err
 			}
 			if err = tx.Commit(ctx); err != nil {
@@ -125,12 +134,58 @@ func admin(args []string) error {
 			fmt.Printf("owner_id=%s channel_slug=%s\n", id, *slug)
 			return nil
 		})
+	case "configure-channel":
+		return configureChannel(args[1:])
 	case "create-credential":
 		return createCredential(args[1:])
 	case "revoke-credential":
 		return revokeCredential(args[1:])
 	default:
 		return usage()
+	}
+}
+
+func configureChannel(args []string) error {
+	fs := flag.NewFlagSet("configure-channel", flag.ContinueOnError)
+	handle := fs.String("owner", "owner", "owner handle")
+	slug := fs.String("slug", "live", "channel slug")
+	policy := fs.String("location-policy", "hidden", "hidden, precise, or rounded")
+	decimals := fs.Int("coordinate-decimals", -1, "0..6 for rounded location")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	coordinateDecimals, err := validateLocationPolicy(*policy, *decimals)
+	if err != nil {
+		return err
+	}
+	return withPool(func(ctx context.Context, p *pgxpool.Pool) error {
+		tag, err := p.Exec(ctx, `UPDATE live_channels c SET location_policy=$1,coordinate_decimals=$2,updated_at=now() FROM users u WHERE c.user_id=u.id AND u.handle=$3 AND c.slug=$4 AND u.disabled_at IS NULL`, *policy, coordinateDecimals, *handle, *slug)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() != 1 {
+			return errors.New("channel not found")
+		}
+		fmt.Printf("channel=%s location_policy=%s\n", *slug, *policy)
+		return nil
+	})
+}
+
+func validateLocationPolicy(policy string, decimals int) (*int16, error) {
+	switch policy {
+	case "hidden", "precise":
+		if decimals != -1 {
+			return nil, errors.New("--coordinate-decimals is valid only with rounded policy")
+		}
+		return nil, nil
+	case "rounded":
+		if decimals < 0 || decimals > 6 {
+			return nil, errors.New("rounded policy requires --coordinate-decimals between 0 and 6")
+		}
+		value := int16(decimals)
+		return &value, nil
+	default:
+		return nil, errors.New("--location-policy must be hidden, precise, or rounded")
 	}
 }
 func createCredential(args []string) error {

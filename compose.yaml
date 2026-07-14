@@ -19,7 +19,8 @@ services:
     build: {context: ./server}
     command: [migrate]
     environment:
-      RUNSYNC_DATABASE_URL: ${RUNSYNC_DATABASE_URL:?set RUNSYNC_DATABASE_URL}
+      RUNSYNC_DATABASE_URL_FILE: /run/secrets/runsync_database_url
+    secrets: [runsync_database_url]
     depends_on:
       postgres: {condition: service_healthy}
     networks: [backend]
@@ -46,15 +47,50 @@ services:
     tmpfs: [/tmp]
     environment:
       RUNSYNC_HTTP_ADDRESS: :8080
-      RUNSYNC_DATABASE_URL: ${RUNSYNC_DATABASE_URL:?set RUNSYNC_DATABASE_URL}
+      RUNSYNC_DATABASE_URL_FILE: /run/secrets/runsync_database_url
       RUNSYNC_PUBLIC_BASE_URL: ${RUNSYNC_PUBLIC_BASE_URL:?set RUNSYNC_PUBLIC_BASE_URL}
       RUNSYNC_ALLOWED_ORIGINS: ${RUNSYNC_ALLOWED_ORIGINS:-}
-      RUNSYNC_VIEWER_TOKEN_SIGNING_KEY: ${RUNSYNC_VIEWER_TOKEN_SIGNING_KEY:?set RUNSYNC_VIEWER_TOKEN_SIGNING_KEY}
+      RUNSYNC_VIEWER_TOKEN_SIGNING_KEY_FILE: /run/secrets/runsync_viewer_token_signing_key
       RUNSYNC_LOG_LEVEL: ${RUNSYNC_LOG_LEVEL:-info}
       # Safe by default because the API is reachable only on the internal backend network.
       RUNSYNC_TRUSTED_PROXY_CIDRS: ${RUNSYNC_TRUSTED_PROXY_CIDRS:-10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7}
+    secrets: [runsync_database_url, runsync_viewer_token_signing_key]
     depends_on:
       postgres: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, http://127.0.0.1:8080/readyz]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    networks: [backend]
+    restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+  web:
+    build: {context: ./web}
+    user: "65534:65534"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m
+    environment:
+      RUNSYNC_API_INTERNAL_URL: http://api:8080
+      RUNSYNC_API_PUBLIC_URL: ${RUNSYNC_API_PUBLIC_URL:?set RUNSYNC_API_PUBLIC_URL}
+      RUNSYNC_API_READ_TOKEN_FILE: /run/secrets/runsync_web_read_token
+      RUNSYNC_CHANNEL_SLUG: ${RUNSYNC_CHANNEL_SLUG:-live}
+      RUNSYNC_OVERLAY_ID: ${RUNSYNC_OVERLAY_ID:?set RUNSYNC_OVERLAY_ID}
+      RUNSYNC_DEFAULT_UNITS: ${RUNSYNC_DEFAULT_UNITS:-imperial}
+      RUNSYNC_DEFAULT_PACE: ${RUNSYNC_DEFAULT_PACE:-rolling}
+      MAPBOX_ACCESS_TOKEN: ${MAPBOX_ACCESS_TOKEN:-}
+    secrets: [runsync_web_read_token]
+    depends_on:
+      api: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
     networks: [backend]
     restart: unless-stopped
     security_opt: [no-new-privileges:true]
@@ -66,11 +102,15 @@ services:
     tmpfs: [/config, /data]
     volumes:
       - ./server/Caddyfile:/etc/caddy/Caddyfile:ro
-    depends_on: [api]
+    environment:
+      RUNSYNC_API_HOST: ${RUNSYNC_API_HOST:?set RUNSYNC_API_HOST}
+      RUNSYNC_WEB_HOST: ${RUNSYNC_WEB_HOST:?set RUNSYNC_WEB_HOST}
+    depends_on:
+      api: {condition: service_healthy}
+      web: {condition: service_healthy}
     networks: [edge, backend]
     restart: unless-stopped
     security_opt: [no-new-privileges:true]
-    cap_drop: [ALL]
   cloudflared:
     image: cloudflare/cloudflared:2026.6.0
     command: [tunnel, --no-autoupdate, run, --token-file, /run/secrets/cloudflare_tunnel_token]
@@ -89,5 +129,11 @@ volumes:
 secrets:
   postgres_password:
     file: ${RUNSYNC_POSTGRES_PASSWORD_FILE:-./secrets/postgres_password}
+  runsync_database_url:
+    file: ${RUNSYNC_DATABASE_URL_FILE:-./secrets/runsync_database_url}
+  runsync_viewer_token_signing_key:
+    file: ${RUNSYNC_VIEWER_TOKEN_SIGNING_KEY_FILE:-./secrets/runsync_viewer_token_signing_key}
   cloudflare_tunnel_token:
     file: ${RUNSYNC_CLOUDFLARE_TOKEN_FILE:-./secrets/cloudflare_tunnel_token}
+  runsync_web_read_token:
+    file: ${RUNSYNC_WEB_READ_TOKEN_FILE:-./secrets/runsync_web_read_token}
