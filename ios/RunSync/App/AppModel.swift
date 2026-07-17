@@ -24,6 +24,7 @@ final class AppModel: ObservableObject {
     @Published var archiveFailureCount = 0
     @Published var captureEnabled = false
     @Published var diagnosticEvents: [String] = []
+    private var lastRejectionSignature: String?
 
     func record(_ event: String) {
         logger.notice("\(event, privacy: .public)")
@@ -44,9 +45,41 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func rejectedMessage() {
+    func rejectedMessage(reason: String, shape: String) {
         invalidMessageCount += 1
-        record("Rejected Garmin message, total=\(invalidMessageCount)")
+        let signature = "\(reason)|\(shape)"
+        if signature != lastRejectionSignature || invalidMessageCount == 1 || invalidMessageCount.isMultiple(of: 10) {
+            let event = "Rejected Garmin message: \(reason), shape=[\(shape)], total=\(invalidMessageCount)"
+            record(event)
+            persistDecoderDiagnostic(event)
+        }
+        lastRejectionSignature = signature
+    }
+
+    private func persistDecoderDiagnostic(_ event: String) {
+        let fileManager = FileManager.default
+        guard let directory = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
+            return
+        }
+        let url = directory.appendingPathComponent("decoder-diagnostics.log")
+        do {
+            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+            if let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size > 64 * 1024 {
+                try? fileManager.removeItem(at: url)
+            }
+            let timestamp = ISO8601DateFormatter().string(from: Date())
+            let data = Data("\(timestamp) \(event)\n".utf8)
+            if fileManager.fileExists(atPath: url.path) {
+                let handle = try FileHandle(forWritingTo: url)
+                defer { try? handle.close() }
+                try handle.seekToEnd()
+                try handle.write(contentsOf: data)
+            } else {
+                try data.write(to: url, options: .atomic)
+            }
+        } catch {
+            logger.error("Could not persist decoder diagnostic")
+        }
     }
 
     func ingestFailed(_ error: Error) {

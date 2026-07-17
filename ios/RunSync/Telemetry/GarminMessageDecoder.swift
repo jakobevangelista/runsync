@@ -80,6 +80,50 @@ enum GarminMessageDecoder {
         )
     }
 
+    static func diagnosticReason(for error: Error) -> String {
+        guard let error = error as? GarminMessageDecoderError else {
+            return String(reflecting: type(of: error))
+        }
+        switch error {
+        case .invalidRoot:
+            return "invalidRoot"
+        case let .missingField(key):
+            return "missingField(\(key))"
+        case let .invalidInteger(key):
+            return "invalidInteger(\(key))"
+        case .unsupportedVersion:
+            return "unsupportedVersion"
+        case .invalidState:
+            return "invalidState"
+        case .invalidCoordinates:
+            return "invalidCoordinates"
+        case .invalidGPSQuality:
+            return "invalidGPSQuality"
+        }
+    }
+
+    static func diagnosticShape(of message: Any) -> String {
+        guard let source = message as? [AnyHashable: Any] else {
+            return "root:\(String(reflecting: type(of: message)))"
+        }
+        return source.map { key, value in
+            let keyName = (key as? String) ?? "<non-string-key>"
+            return "\(keyName):\(diagnosticType(of: value))"
+        }
+        .sorted()
+        .joined(separator: ",")
+    }
+
+    private static func diagnosticType(of value: Any) -> String {
+        guard let number = value as? NSNumber else {
+            return String(reflecting: type(of: value))
+        }
+        if CFGetTypeID(number) == CFBooleanGetTypeID() {
+            return "NSNumber(bool)"
+        }
+        return "NSNumber(objCType=\(String(cString: number.objCType)))"
+    }
+
     private static func requiredInteger(_ key: String, from values: [String: Any]) throws -> Int {
         guard values[key] != nil else {
             throw GarminMessageDecoderError.missingField(key)

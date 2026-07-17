@@ -222,7 +222,11 @@ extension GarminConnectionService: IQAppMessageDelegate {
                 self.ingest(sample, deviceID: deviceID)
             }
         } catch {
-            Task { @MainActor [weak self] in self?.model.rejectedMessage() }
+            let reason = GarminMessageDecoder.diagnosticReason(for: error)
+            let shape = GarminMessageDecoder.diagnosticShape(of: message)
+            Task { @MainActor [weak self] in
+                self?.model.rejectedMessage(reason: reason, shape: shape)
+            }
         }
     }
 }
