@@ -54,7 +54,12 @@ struct TelemetryEnvelope: Codable, Equatable, Identifiable, Sendable {
 }
 
 struct IngestResult: Sendable {
-    let envelope: TelemetryEnvelope
+    let sample: TelemetrySample
+    let phoneReceivedAt: Date
+    let envelope: TelemetryEnvelope?
+    let session: ActivitySessionState?
+    let boundaryReason: ActivityBoundaryReason?
+    let observationReason: ActivityObservationReason?
     let acknowledgedIDs: [UUID]
     let serverStatus: ServerUploadStatus
 }

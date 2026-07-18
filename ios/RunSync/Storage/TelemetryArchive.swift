@@ -2,20 +2,42 @@ import Foundation
 
 actor TelemetryArchive {
     private let rootURL: URL
+    private let storageRootURL: URL
     private let fileManager: FileManager
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
 
-    init(rootURL: URL? = nil, fileManager: FileManager = .default) {
+    init(
+        rootURL: URL? = nil,
+        storageRootURL: URL? = nil,
+        fileManager: FileManager = .default
+    ) {
         self.fileManager = fileManager
-        self.rootURL = rootURL ?? Self.defaultRootURL(fileManager: fileManager)
+        let resolvedRoot = rootURL ?? Self.defaultRootURL(fileManager: fileManager)
+        self.rootURL = resolvedRoot
+        self.storageRootURL = storageRootURL ?? (rootURL == nil ? resolvedRoot.deletingLastPathComponent() : resolvedRoot)
 
         let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
+        encoder.dateEncodingStrategy = .custom { date, encoder in
+            var container = encoder.singleValueContainer()
+            try container.encode(date.timeIntervalSince1970)
+        }
         self.encoder = encoder
 
         let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
+        decoder.dateDecodingStrategy = .custom { decoder in
+            let container = try decoder.singleValueContainer()
+            if let seconds = try? container.decode(Double.self) {
+                return Date(timeIntervalSince1970: seconds)
+            }
+            let value = try container.decode(String.self)
+            let fractional = ISO8601DateFormatter()
+            fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            if let date = fractional.date(from: value) ?? ISO8601DateFormatter().date(from: value) {
+                return date
+            }
+            throw DecodingError.dataCorruptedError(in: container, debugDescription: "Invalid timestamp")
+        }
         self.decoder = decoder
     }
 
@@ -74,10 +96,55 @@ actor TelemetryArchive {
         return pending.sorted { $0.phoneReceivedAt < $1.phoneReceivedAt }
     }
 
+    func latestEnvelope(runID: UUID) throws -> TelemetryEnvelope? {
+        try envelopes(runID: runID).last
+    }
+
+    func containsEnvelope(_ envelopeID: UUID, runID: UUID) throws -> Bool {
+        try envelopes(runID: runID).contains { $0.id == envelopeID }
+    }
+
+    func currentSession() throws -> ActivitySessionState? {
+        let url = storageRootURL.appendingPathComponent("session-state.json")
+        guard fileManager.fileExists(atPath: url.path) else { return nil }
+        return try decoder.decode(ActivitySessionState.self, from: Data(contentsOf: url))
+    }
+
+    func writeCurrentSession(_ session: ActivitySessionState) throws {
+        try writeMetadata(session, to: storageRootURL.appendingPathComponent("session-state.json"))
+    }
+
+    func deleteCurrentSession() throws {
+        let url = storageRootURL.appendingPathComponent("session-state.json")
+        if fileManager.fileExists(atPath: url.path) {
+            try fileManager.removeItem(at: url)
+        }
+    }
+
+    func runMetadata(runID: UUID) throws -> ActivityRunMetadata? {
+        let url = runDirectory(runID).appendingPathComponent("metadata.json")
+        guard fileManager.fileExists(atPath: url.path) else { return nil }
+        return try decoder.decode(ActivityRunMetadata.self, from: Data(contentsOf: url))
+    }
+
+    func writeRunMetadata(_ metadata: ActivityRunMetadata) throws {
+        let directory = try prepareRunDirectory(metadata.localRunID)
+        try writeMetadata(metadata, to: directory.appendingPathComponent("metadata.json"))
+    }
+
+    func closeRun(_ closure: PendingSessionClosure) throws {
+        guard var metadata = try runMetadata(runID: closure.localRunID) else { return }
+        metadata.closedAt = closure.closedAt
+        metadata.closingReason = closure.closingReason
+        metadata.implicitEndUsed = closure.closingReason == .implicitTimerReset
+        try writeRunMetadata(metadata)
+    }
+
     func deleteAll() throws {
         if fileManager.fileExists(atPath: rootURL.path) {
             try fileManager.removeItem(at: rootURL)
         }
+        try deleteCurrentSession()
     }
 
     private func prepareRunDirectory(_ runID: UUID) throws -> URL {
@@ -111,6 +178,19 @@ actor TelemetryArchive {
         try handle.seekToEnd()
         try handle.write(contentsOf: data)
         try handle.synchronize()
+    }
+
+    private func writeMetadata<T: Encodable>(_ value: T, to url: URL) throws {
+        try fileManager.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true,
+            attributes: [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication]
+        )
+        let data = try encoder.encode(value)
+        try data.write(
+            to: url,
+            options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication]
+        )
     }
 
     private func truncatePartialTail(_ handle: FileHandle) throws {

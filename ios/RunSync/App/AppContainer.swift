@@ -15,7 +15,10 @@ final class AppContainer {
         let ingestor = TelemetryIngestor(
             archive: archive,
             sink: sink,
-            installationID: InstallationIdentity.loadOrCreate()
+            installationID: InstallationIdentity.loadOrCreate(),
+            statusDidChange: { [model] status in
+                await MainActor.run { model.updateServerStatus(status) }
+            }
         )
         self.model = model
         self.garmin = GarminConnectionService(

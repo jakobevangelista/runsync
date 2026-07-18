@@ -51,9 +51,9 @@ func TestDecodeRejectsOversizeAndUnknown(t *testing.T) {
 	}
 }
 
-func TestPublishIngestSendsTransitionBeforeSamples(t *testing.T) {
+func TestPublishIngestSendsEndedTransitionBeforeSamples(t *testing.T) {
 	channelID, activityID := uuid.New(), uuid.New()
-	transition := telemetry.Event{Envelope: telemetry.Envelope{EnvelopeID: uuid.New(), ActivityID: activityID}}
+	transition := telemetry.Event{Envelope: telemetry.Envelope{EnvelopeID: uuid.New(), ActivityID: activityID, Sample: telemetry.Sample{State: 4}}}
 	sample := telemetry.Event{Envelope: telemetry.Envelope{EnvelopeID: uuid.New(), ActivityID: activityID}}
 	s := &Server{hub: live.NewHub(3)}
 	sub := s.hub.Subscribe(channelID)
@@ -66,12 +66,13 @@ func TestPublishIngestSendsTransitionBeforeSamples(t *testing.T) {
 	})
 
 	for i, want := range []struct {
-		kind string
-		id   uuid.UUID
-	}{{"activity", transition.Envelope.EnvelopeID}, {"sample", transition.Envelope.EnvelopeID}, {"sample", sample.Envelope.EnvelopeID}} {
+		kind  string
+		id    uuid.UUID
+		state int16
+	}{{"activity", transition.Envelope.EnvelopeID, 4}, {"sample", transition.Envelope.EnvelopeID, 4}, {"sample", sample.Envelope.EnvelopeID, 0}} {
 		message := <-sub.C
-		if message.Kind != want.kind || message.Event.Envelope.EnvelopeID != want.id {
-			t.Fatalf("message %d = %s/%s, want %s/%s", i, message.Kind, message.Event.Envelope.EnvelopeID, want.kind, want.id)
+		if message.Kind != want.kind || message.Event.Envelope.EnvelopeID != want.id || message.Event.Envelope.Sample.State != want.state {
+			t.Fatalf("message %d = %s/%s/state %d, want %s/%s/state %d", i, message.Kind, message.Event.Envelope.EnvelopeID, message.Event.Envelope.Sample.State, want.kind, want.id, want.state)
 		}
 	}
 }

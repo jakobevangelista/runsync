@@ -53,6 +53,10 @@ struct StatusView: View {
             statusCell("Authorization", model.authorizationStatus)
             statusCell("Watch", model.watchStatus)
             statusCell("Data field", model.fieldStatus)
+            statusCell("Capture", model.captureEnabled ? "Enabled" : "Disabled")
+            statusCell("Garmin activity", model.activityStatus)
+            statusCell("RunSync session", model.runSyncSessionStatus)
+            statusCell("Current activity", abbreviatedRunID)
             statusCell("Archive", model.archiveStatus)
             statusCell("Server", model.serverStatus)
             statusCell("Received", "\(model.receivedCount)")
@@ -85,6 +89,21 @@ struct StatusView: View {
             Text("Telemetry includes precise location and is retained on this iPhone until you delete it.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+
+            if !model.authorizedDevices.isEmpty {
+                Picker("Capture watch", selection: Binding(
+                    get: { model.selectedCaptureDeviceID },
+                    set: { deviceID in
+                        if let deviceID { garmin.selectCaptureDevice(deviceID) }
+                    }
+                )) {
+                    Text("Select a watch").tag(Optional<UUID>.none)
+                    ForEach(model.authorizedDevices) { device in
+                        Text(device.name).tag(Optional(device.id))
+                    }
+                }
+                .pickerStyle(.menu)
+            }
 
             Button("Authorize Garmin Watch") { garmin.authorizeDevice() }
                 .buttonStyle(.borderedProminent)
@@ -180,6 +199,10 @@ struct StatusView: View {
     }
 
     private var lastSampleAt: Date? { model.lastSampleAt }
+
+    private var abbreviatedRunID: String {
+        model.currentRunID.map { String($0.uuidString.prefix(8)) } ?? "None"
+    }
 
     private func relativeDate(_ date: Date?) -> String {
         guard let date else { return "Never" }

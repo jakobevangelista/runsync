@@ -17,6 +17,28 @@ final class TelemetryArchiveTests: XCTestCase {
         XCTAssertEqual(acknowledged, [envelope.id])
     }
 
+    func testPreservesSubsecondTimestampForExactEnvelopeReplay() async throws {
+        let root = try TelemetryTestSupport.temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let archive = TelemetryArchive(rootURL: root)
+        let original = TelemetryTestSupport.envelope()
+        let envelope = TelemetryEnvelope(
+            id: original.id,
+            installationID: original.installationID,
+            localRunID: original.localRunID,
+            phoneReceivedAt: Date(timeIntervalSince1970: 1_783_884_161.123_456),
+            garminDeviceIdentifier: original.garminDeviceIdentifier,
+            appVersion: original.appVersion,
+            sample: original.sample
+        )
+
+        try await archive.append(envelope)
+
+        let envelopes = try await archive.envelopes(runID: envelope.localRunID)
+        let restored = try XCTUnwrap(envelopes.first)
+        XCTAssertEqual(restored.phoneReceivedAt.timeIntervalSince1970, envelope.phoneReceivedAt.timeIntervalSince1970, accuracy: 0.000_001)
+    }
+
     func testIgnoresPartialFinalLine() async throws {
         let root = try TelemetryTestSupport.temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -95,5 +117,64 @@ final class TelemetryArchiveTests: XCTestCase {
 
         let pending = try await archive.pendingEnvelopes()
         XCTAssertEqual(pending.map(\.id), [envelope.id])
+    }
+
+    func testPersistsCurrentSessionAndRunMetadataIndependentlyOfAcknowledgements() async throws {
+        let root = try TelemetryTestSupport.temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let archive = TelemetryArchive(rootURL: root)
+        let runID = UUID()
+        let deviceID = UUID()
+        let session = ActivitySessionState(
+            localRunID: runID,
+            garminDeviceIdentifier: deviceID,
+            phase: .active,
+            activityStartEpochSeconds: 123,
+            lastElapsedTimeMilliseconds: 1_000,
+            lastDistanceDecimeters: 100,
+            lastActivityState: .running,
+            lastWatchSequence: 1,
+            openedAt: Date(timeIntervalSince1970: 100),
+            lastPhoneReceivedAt: Date(timeIntervalSince1970: 101),
+            lastBoundaryReason: .firstRunning
+        )
+
+        try await archive.writeCurrentSession(session)
+        try await archive.writeRunMetadata(ActivityRunMetadata(session: session))
+
+        let restoredSession = try await archive.currentSession()
+        let restoredMetadata = try await archive.runMetadata(runID: runID)
+        XCTAssertEqual(restoredSession, session)
+        XCTAssertEqual(restoredMetadata?.localRunID, runID)
+    }
+
+    func testDeleteAllRemovesSessionAndRunMetadata() async throws {
+        let root = try TelemetryTestSupport.temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let archive = TelemetryArchive(rootURL: root)
+        let envelope = TelemetryTestSupport.envelope()
+        let session = ActivitySessionState(
+            localRunID: envelope.localRunID,
+            garminDeviceIdentifier: envelope.garminDeviceIdentifier,
+            phase: .active,
+            activityStartEpochSeconds: envelope.sample.activityStartEpochSeconds,
+            lastElapsedTimeMilliseconds: envelope.sample.elapsedTimeMilliseconds,
+            lastDistanceDecimeters: envelope.sample.distanceDecimeters,
+            lastActivityState: .running,
+            lastWatchSequence: envelope.sample.sequence,
+            openedAt: envelope.phoneReceivedAt,
+            lastPhoneReceivedAt: envelope.phoneReceivedAt,
+            lastBoundaryReason: .firstRunning
+        )
+        try await archive.append(envelope)
+        try await archive.writeCurrentSession(session)
+        try await archive.writeRunMetadata(ActivityRunMetadata(session: session))
+
+        try await archive.deleteAll()
+
+        let restoredSession = try await archive.currentSession()
+        let restoredEnvelopes = try await archive.envelopes(runID: envelope.localRunID)
+        XCTAssertNil(restoredSession)
+        XCTAssertTrue(restoredEnvelopes.isEmpty)
     }
 }

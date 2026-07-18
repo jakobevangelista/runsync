@@ -1,6 +1,11 @@
 import Foundation
 import OSLog
 
+struct GarminDeviceOption: Identifiable, Equatable {
+    let id: UUID
+    let name: String
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     private let logger = Logger(subsystem: "com.jakobevangelista.runsync", category: "diagnostics")
@@ -9,6 +14,7 @@ final class AppModel: ObservableObject {
     @Published var watchStatus = "Disconnected"
     @Published var fieldStatus = "Unknown"
     @Published var activityStatus = "Waiting"
+    @Published var runSyncSessionStatus = "None"
     @Published var archiveStatus = "Ready"
     @Published var serverStatus = "Not configured"
     @Published var serverBaseURL = ""
@@ -23,6 +29,8 @@ final class AppModel: ObservableObject {
     @Published var invalidMessageCount = 0
     @Published var archiveFailureCount = 0
     @Published var captureEnabled = false
+    @Published var authorizedDevices: [GarminDeviceOption] = []
+    @Published var selectedCaptureDeviceID: UUID?
     @Published var diagnosticEvents: [String] = []
     private var lastRejectionSignature: String?
 
@@ -33,16 +41,43 @@ final class AppModel: ObservableObject {
         diagnosticEvents = Array(diagnosticEvents.prefix(20))
     }
 
-    func received(_ result: IngestResult) {
+    func received(_ result: IngestResult, callbackOrdinal: UInt64? = nil) {
         receivedCount += 1
-        lastSampleAt = result.envelope.phoneReceivedAt
-        currentRunID = result.envelope.localRunID
-        activityStatus = result.envelope.sample.state.label
-        archiveStatus = "Healthy"
-        updateServerStatus(result.serverStatus)
-        if receivedCount == 1 || receivedCount.isMultiple(of: 10) {
-            record("Received telemetry q=\(result.envelope.sample.sequence), total=\(receivedCount)")
+        lastSampleAt = result.phoneReceivedAt
+        if result.observationReason != .nonSelectedDevice {
+            activityStatus = result.sample.state.label
         }
+        currentRunID = result.session?.localRunID
+        runSyncSessionStatus = sessionLabel(result.session)
+        if result.envelope != nil { archiveStatus = "Healthy" }
+        updateServerStatus(result.serverStatus)
+        if let reason = result.boundaryReason {
+            record("Activity boundary: \(reason.rawValue)")
+        }
+        if receivedCount == 1 || receivedCount.isMultiple(of: 10) {
+            let ordinal = callbackOrdinal.map { ", receipt=\($0)" } ?? ""
+            record("Received telemetry q=\(result.sample.sequence)\(ordinal), total=\(receivedCount)")
+        }
+    }
+
+    func restoreSession(_ session: ActivitySessionState?) {
+        currentRunID = session?.localRunID
+        runSyncSessionStatus = sessionLabel(session)
+        if let session {
+            activityStatus = session.lastActivityState.label
+            record("Restored activity session \(session.localRunID.uuidString.prefix(8))")
+        }
+    }
+
+    func receiptQueueOverflowed() {
+        archiveFailureCount += 1
+        archiveStatus = "Capture stopped"
+        record("Capture disabled: ordered receipt queue overflow")
+    }
+
+    func capturePausedForReconciliation() {
+        archiveStatus = "Reconciliation required"
+        record("Capture disabled: local session state requires reconciliation")
     }
 
     func rejectedMessage(reason: String, shape: String) {
@@ -93,6 +128,7 @@ final class AppModel: ObservableObject {
         currentRunID = nil
         receivedCount = 0
         activityStatus = "Waiting"
+        runSyncSessionStatus = "None"
         archiveStatus = "Ready"
         serverStatus = "Not configured"
         pendingUploadCount = 0
@@ -106,5 +142,17 @@ final class AppModel: ObservableObject {
         pendingUploadCount = status.pendingCount
         lastUploadAt = status.lastUploadAt
         lastAcknowledgementAt = status.lastAcknowledgementAt
+    }
+
+    private func sessionLabel(_ session: ActivitySessionState?) -> String {
+        guard let session else { return "None" }
+        let label: String
+        switch session.phase {
+        case .opening: label = "Opening"
+        case .active: label = "Active"
+        case .paused: label = "Paused"
+        case .stopped: label = "Stopped"
+        }
+        return session.restoredAfterRelaunch ? "\(label) (restored)" : label
     }
 }

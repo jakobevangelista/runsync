@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/google/uuid"
@@ -82,26 +83,48 @@ func (s *Store) Ingest(ctx context.Context, p auth.Principal, b telemetry.Batch,
 			result.Events = append(result.Events, ev)
 		}
 	}
+	sortEvents(result.Events)
 	var attach *telemetry.Event
 	for activity, events := range newByActivity {
 		earliest := events[0]
 		latest := events[0]
+		var latestWithStart *telemetry.Event
+		hasRunning := false
 		for _, e := range events[1:] {
 			if e.Envelope.PhoneReceivedAt.Before(earliest.Envelope.PhoneReceivedAt) {
 				earliest = e
 			}
-			if e.Envelope.PhoneReceivedAt.After(latest.Envelope.PhoneReceivedAt) || (e.Envelope.PhoneReceivedAt.Equal(latest.Envelope.PhoneReceivedAt) && e.IngestCursor > latest.IngestCursor) {
+			if eventAfter(e, latest) {
 				latest = e
 			}
 		}
-		var authoritative bool
-		err = tx.QueryRow(ctx, `UPDATE activities SET first_phone_received_at=LEAST(first_phone_received_at,$2),last_phone_received_at=GREATEST(last_phone_received_at,$3),last_server_received_at=GREATEST(last_server_received_at,$4),garmin_started_at=COALESCE(garmin_started_at,$5),current_state=CASE WHEN $3>last_phone_received_at OR ($3=last_phone_received_at AND $9>latest_ingest_cursor) THEN $6 ELSE current_state END,ended_at=CASE WHEN ($3>last_phone_received_at OR ($3=last_phone_received_at AND $9>latest_ingest_cursor)) AND $6=4 THEN $3 WHEN $3>last_phone_received_at OR ($3=last_phone_received_at AND $9>latest_ingest_cursor) THEN NULL ELSE ended_at END,latest_ingest_cursor=CASE WHEN $3>last_phone_received_at OR ($3=last_phone_received_at AND $9>latest_ingest_cursor) THEN $9 ELSE latest_ingest_cursor END,sample_count=sample_count+$7,updated_at=$4 WHERE id=$1 AND user_id=$8 RETURNING latest_ingest_cursor=$9`, activity, earliest.Envelope.PhoneReceivedAt, latest.Envelope.PhoneReceivedAt, now, epoch(latest.Envelope.Sample.ActivityStartEpochSeconds), latest.Envelope.Sample.State, len(events), p.UserID, latest.IngestCursor).Scan(&authoritative)
+		for _, e := range events {
+			if e.Envelope.Sample.State == 1 {
+				hasRunning = true
+			}
+			if e.Envelope.Sample.ActivityStartEpochSeconds != nil && (latestWithStart == nil || eventAfter(e, *latestWithStart)) {
+				candidate := e
+				latestWithStart = &candidate
+			}
+		}
+		var started *time.Time
+		if latestWithStart != nil {
+			started = epoch(latestWithStart.Envelope.Sample.ActivityStartEpochSeconds)
+		}
+		var authoritativeCursor int64
+		err = tx.QueryRow(ctx, `UPDATE activities SET first_phone_received_at=LEAST(first_phone_received_at,$2),last_phone_received_at=GREATEST(last_phone_received_at,$3),last_server_received_at=GREATEST(last_server_received_at,$4),garmin_started_at=COALESCE(garmin_started_at,$5),current_state=CASE WHEN $3>last_phone_received_at OR ($3=last_phone_received_at AND $9>latest_ingest_cursor) THEN $6 ELSE current_state END,ended_at=CASE WHEN ($3>last_phone_received_at OR ($3=last_phone_received_at AND $9>latest_ingest_cursor)) AND $6=4 THEN $3 WHEN $3>last_phone_received_at OR ($3=last_phone_received_at AND $9>latest_ingest_cursor) THEN NULL ELSE ended_at END,latest_ingest_cursor=CASE WHEN $3>last_phone_received_at OR ($3=last_phone_received_at AND $9>latest_ingest_cursor) THEN $9 ELSE latest_ingest_cursor END,sample_count=sample_count+$7,updated_at=$4 WHERE id=$1 AND user_id=$8 RETURNING latest_ingest_cursor`, activity, earliest.Envelope.PhoneReceivedAt, latest.Envelope.PhoneReceivedAt, now, started, latest.Envelope.Sample.State, len(events), p.UserID, latest.IngestCursor).Scan(&authoritativeCursor)
 		if err != nil {
 			return result, err
 		}
-		if authoritative {
-			if latest.Envelope.Sample.State == 1 && (attach == nil || latest.Envelope.PhoneReceivedAt.After(attach.Envelope.PhoneReceivedAt) || (latest.Envelope.PhoneReceivedAt.Equal(attach.Envelope.PhoneReceivedAt) && latest.IngestCursor > attach.IngestCursor)) {
-				candidate := latest
+		if hasRunning {
+			candidate := latest
+			if authoritativeCursor != latest.IngestCursor {
+				candidate, err = loadEvent(ctx, tx, p.UserID, activity, authoritativeCursor)
+				if err != nil {
+					return result, err
+				}
+			}
+			if candidate.Envelope.Sample.State != 0 && (attach == nil || eventAfter(candidate, *attach)) {
 				attach = &candidate
 			}
 		}
@@ -165,6 +188,24 @@ func activityIDs(events map[uuid.UUID][]telemetry.Event) []uuid.UUID {
 		ids = append(ids, id)
 	}
 	return ids
+}
+func sortEvents(events []telemetry.Event) {
+	sort.Slice(events, func(i, j int) bool {
+		if events[i].Envelope.PhoneReceivedAt.Equal(events[j].Envelope.PhoneReceivedAt) {
+			return events[i].IngestCursor < events[j].IngestCursor
+		}
+		return events[i].Envelope.PhoneReceivedAt.Before(events[j].Envelope.PhoneReceivedAt)
+	})
+}
+func eventAfter(a, b telemetry.Event) bool {
+	return a.Envelope.PhoneReceivedAt.After(b.Envelope.PhoneReceivedAt) || (a.Envelope.PhoneReceivedAt.Equal(b.Envelope.PhoneReceivedAt) && a.IngestCursor > b.IngestCursor)
+}
+func loadEvent(ctx context.Context, tx pgx.Tx, user, activity uuid.UUID, cursor int64) (telemetry.Event, error) {
+	var event telemetry.Event
+	e := &event.Envelope
+	s := &e.Sample
+	err := tx.QueryRow(ctx, `SELECT t.envelope_id,t.activity_id,t.phone_received_at,d.garmin_identifier,t.app_version,t.protocol_version,t.watch_sequence,t.activity_state,t.garmin_activity_start_epoch_seconds,t.elapsed_time_milliseconds,t.distance_decimeters,t.speed_millimeters_per_second,t.heart_rate_bpm,t.cadence_rpm,t.latitude_microdegrees,t.longitude_microdegrees,t.gps_quality,t.altitude_decimeters,t.total_ascent_meters,t.server_received_at,t.ingest_cursor FROM telemetry_samples t JOIN activities a ON a.id=t.activity_id AND a.user_id=t.user_id JOIN garmin_devices d ON d.id=a.garmin_device_id WHERE t.user_id=$1 AND t.activity_id=$2 AND t.ingest_cursor=$3`, user, activity, cursor).Scan(&e.EnvelopeID, &e.ActivityID, &e.PhoneReceivedAt, &e.GarminDeviceIdentifier, &e.AppVersion, &s.ProtocolVersion, &s.Sequence, &s.State, &s.ActivityStartEpochSeconds, &s.ElapsedTimeMilliseconds, &s.DistanceDecimeters, &s.SpeedMillimetersPerSecond, &s.HeartRateBPM, &s.CadenceRPM, &s.LatitudeMicrodegrees, &s.LongitudeMicrodegrees, &s.GPSQuality, &s.AltitudeDecimeters, &s.TotalAscentMeters, &event.ServerReceivedAt, &event.IngestCursor)
+	return event, err
 }
 func epoch(v *int) *time.Time {
 	if v == nil {

@@ -45,6 +45,14 @@ final class GarminMessageDecoderTests: XCTestCase {
         XCTAssertNil(sample.heartRateBPM)
     }
 
+    func testDecodesMinimalEndedPayloadWithOptionalStart() throws {
+        let withoutStart = try GarminMessageDecoder.decode(["v": 1, "q": 2, "st": 4])
+        let withStart = try GarminMessageDecoder.decode(["v": 1, "q": 3, "st": 4, "rt": 123])
+        XCTAssertEqual(withoutStart.state, .ended)
+        XCTAssertNil(withoutStart.activityStartEpochSeconds)
+        XCTAssertEqual(withStart.activityStartEpochSeconds, 123)
+    }
+
     func testDiagnosticIncludesFieldTypesButNotValues() {
         let message: NSDictionary = [
             "v": NSNumber(value: 1),

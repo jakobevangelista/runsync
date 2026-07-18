@@ -7,25 +7,62 @@ final class GarminConnectionService: NSObject {
     private let model: AppModel
     private let ingestor: TelemetryIngestor
     private let deviceStore: GarminDeviceStore
+    private let captureSettings: CaptureSettingsStore
     private let serverConfiguration: ServerConfigurationStore?
     private let connectIQ = ConnectIQ.sharedInstance()!
     private var devicesByID: [UUID: IQDevice] = [:]
     private var appsByDeviceID: [UUID: IQApp] = [:]
+    nonisolated private let receiptPipeline: GarminReceiptPipeline
 
     init(
         model: AppModel,
         ingestor: TelemetryIngestor,
         deviceStore: GarminDeviceStore = GarminDeviceStore(),
+        captureSettings: CaptureSettingsStore = CaptureSettingsStore(),
         serverConfiguration: ServerConfigurationStore? = nil
     ) {
         self.model = model
         self.ingestor = ingestor
         self.deviceStore = deviceStore
+        self.captureSettings = captureSettings
         self.serverConfiguration = serverConfiguration
+        self.receiptPipeline = GarminReceiptPipeline(
+            consume: { [model, ingestor, captureSettings] receipt in
+                let settings = captureSettings.load()
+                do {
+                    let result = try await ingestor.ingest(
+                        receipt.sample,
+                        from: receipt.deviceID,
+                        phoneReceivedAt: receipt.phoneReceivedAt,
+                        selectedDeviceID: settings.selectedDeviceID,
+                        captureEnabled: settings.captureEnabled
+                    )
+                    await MainActor.run { model.received(result, callbackOrdinal: receipt.callbackOrdinal) }
+                    return .processed
+                } catch let error as TelemetryIngestionFailure {
+                    await MainActor.run { model.ingestFailed(error) }
+                    return .pause(retryCurrent: !error.receiptPersisted)
+                } catch {
+                    await MainActor.run { model.ingestFailed(error) }
+                    return .pause(retryCurrent: true)
+                }
+            },
+            onPause: { [model, ingestor, captureSettings] in
+                captureSettings.setCaptureEnabled(false)
+                Task { await ingestor.captureChanged(enabled: false) }
+                Task { @MainActor in
+                    model.captureEnabled = false
+                    model.capturePausedForReconciliation()
+                }
+            }
+        )
         super.init()
     }
 
     func start() {
+        let settings = captureSettings.load()
+        model.captureEnabled = settings.captureEnabled
+        model.selectedCaptureDeviceID = settings.selectedDeviceID
         model.record("Initializing Garmin SDK")
         connectIQ.initialize(
             withUrlScheme: RunSyncConstants.callbackScheme,
@@ -36,10 +73,13 @@ final class GarminConnectionService: NSObject {
         model.record("Restored \(devicesByID.count) authorized device(s)")
         Task { [weak self, ingestor] in
             do {
+                _ = await ingestor.captureChanged(enabled: settings.captureEnabled)
                 let status = try await ingestor.recoverPending()
+                let session = try await ingestor.currentActivitySession()
                 let configurationState = await self?.serverConfiguration?.displayState()
                 await MainActor.run {
                     self?.model.updateServerStatus(status)
+                    self?.model.restoreSession(session)
                     if let configurationState {
                         self?.model.serverBaseURL = configurationState.baseURL
                         self?.model.serverTokenConfigured = configurationState.tokenConfigured
@@ -118,18 +158,67 @@ final class GarminConnectionService: NSObject {
     }
 
     func setCaptureEnabled(_ enabled: Bool) {
-        model.captureEnabled = enabled
+        let accepted = receiptPipeline.enqueueOperation { [model, ingestor, captureSettings] in
+            if enabled {
+                do {
+                    try await ingestor.reconcileSession()
+                } catch {
+                    await MainActor.run { model.ingestFailed(error) }
+                    return false
+                }
+            }
+            _ = await ingestor.captureChanged(enabled: enabled)
+            captureSettings.setCaptureEnabled(enabled)
+            await MainActor.run {
+                model.captureEnabled = enabled
+                model.record(enabled ? "Capture enabled" : "Capture disabled")
+            }
+            return true
+        }
+        guard accepted else {
+            stopCaptureAfterQueueFailure()
+            return
+        }
+        if enabled { receiptPipeline.resume() }
+    }
+
+    func selectCaptureDevice(_ deviceID: UUID) {
+        guard deviceID != captureSettings.load().selectedDeviceID else { return }
+        let accepted = receiptPipeline.enqueueOperation { [model, ingestor, captureSettings] in
+            do {
+                guard try await ingestor.canChangeCaptureDevice() else {
+                    await MainActor.run {
+                        model.record("End the current RunSync session before changing watches")
+                        model.selectedCaptureDeviceID = captureSettings.load().selectedDeviceID
+                    }
+                    return true
+                }
+                captureSettings.setSelectedDeviceID(deviceID)
+                await MainActor.run {
+                    model.selectedCaptureDeviceID = deviceID
+                    model.record("Selected telemetry capture watch")
+                }
+                return true
+            } catch {
+                await MainActor.run { model.ingestFailed(error) }
+                return false
+            }
+        }
+        if !accepted { stopCaptureAfterQueueFailure() }
     }
 
     func deleteAllTelemetry() {
-        Task { [weak self, ingestor] in
+        let accepted = receiptPipeline.enqueueOperation { [model, ingestor] in
             do {
                 try await ingestor.deleteAllTelemetry()
-                await MainActor.run { self?.model.telemetryDeleted() }
+                await MainActor.run { model.telemetryDeleted() }
+                return true
             } catch {
-                await MainActor.run { self?.model.ingestFailed(error) }
+                await MainActor.run { model.ingestFailed(error) }
+                return false
             }
         }
+        if !accepted { stopCaptureAfterQueueFailure() }
     }
 
     private func replaceDevices(_ devices: [IQDevice], persist: Bool) {
@@ -145,6 +234,20 @@ final class GarminConnectionService: NSObject {
         }
 
         model.authorizationStatus = devices.isEmpty ? "Action required" : "Authorized"
+        model.authorizedDevices = devices
+            .map { GarminDeviceOption(id: $0.uuid, name: $0.friendlyName ?? $0.modelName ?? "Garmin device") }
+            .sorted { $0.name < $1.name }
+        let selected = captureSettings.load().selectedDeviceID
+        if let selectedDeviceID = selected, devicesByID[selectedDeviceID] == nil {
+            model.record("Selected capture watch is not currently authorized")
+        }
+        if selected == nil, devices.count == 1, let deviceID = devices.first?.uuid {
+            captureSettings.setSelectedDeviceID(deviceID)
+            model.selectedCaptureDeviceID = deviceID
+            model.record("Selected the only authorized watch for capture")
+        } else {
+            model.selectedCaptureDeviceID = selected
+        }
         for device in devices {
             model.record("Registering \(device.friendlyName ?? device.modelName ?? "Garmin device")")
             connectIQ.register(forDeviceEvents: device, delegate: self)
@@ -174,16 +277,13 @@ final class GarminConnectionService: NSObject {
         }
     }
 
-    private func ingest(_ sample: TelemetrySample, deviceID: UUID) {
-        Task { [weak self, ingestor] in
-            do {
-                let result = try await ingestor.ingest(sample, from: deviceID)
-                await MainActor.run { self?.model.received(result) }
-            } catch {
-                await MainActor.run { self?.model.ingestFailed(error) }
-            }
-        }
+    private func stopCaptureAfterQueueFailure() {
+        captureSettings.setCaptureEnabled(false)
+        Task { [ingestor] in _ = await ingestor.captureChanged(enabled: false) }
+        model.captureEnabled = false
+        model.receiptQueueOverflowed()
     }
+
 }
 
 extension GarminConnectionService: IQDeviceEventDelegate {
@@ -213,13 +313,16 @@ extension GarminConnectionService: IQDeviceEventDelegate {
 
 extension GarminConnectionService: IQAppMessageDelegate {
     nonisolated func receivedMessage(_ message: Any!, from app: IQApp!) {
+        let callbackTime = Date()
         guard let message else { return }
         do {
             let sample = try GarminMessageDecoder.decode(message)
             guard let deviceID = app?.device?.uuid else { return }
-            Task { @MainActor [weak self] in
-                guard let self, self.model.captureEnabled else { return }
-                self.ingest(sample, deviceID: deviceID)
+            guard receiptPipeline.enqueue(sample, from: deviceID, at: callbackTime) else {
+                Task { @MainActor [weak self] in
+                    self?.stopCaptureAfterQueueFailure()
+                }
+                return
             }
         } catch {
             let reason = GarminMessageDecoder.diagnosticReason(for: error)

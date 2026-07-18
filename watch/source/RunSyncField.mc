@@ -10,17 +10,23 @@ class RunSyncField extends WatchUi.DataField {
     private var _sequence as Lang.Number = 0;
     private var _state as Lang.Number = 0;
     private var _hasGPS as Lang.Boolean = false;
+    private var _cachedRunStart as Lang.Number?;
+    private var _terminalEnqueued as Lang.Boolean = false;
 
     function initialize() {
         DataField.initialize();
         _encoder = new TelemetryEncoder();
         _sender = new TelemetrySender();
+        _cachedRunStart = null;
     }
 
     function compute(info as Activity.Info) as Void {
         _hasGPS = info has :currentLocation && info.currentLocation != null;
         var payload = _encoder.encode(info, _sequence, _state);
         _state = payload["st"] as Lang.Number;
+        if (info has :startTime && info.startTime != null) {
+            _cachedRunStart = info.startTime.value();
+        }
         _sequence += 1;
         _sender.enqueue(payload);
     }
@@ -47,6 +53,7 @@ class RunSyncField extends WatchUi.DataField {
 
     function onTimerStart() as Void {
         _state = 1;
+        _terminalEnqueued = false;
     }
 
     function onTimerPause() as Void {
@@ -63,6 +70,24 @@ class RunSyncField extends WatchUi.DataField {
 
     function onTimerReset() as Void {
         _state = 4;
+        if (_terminalEnqueued) {
+            _sender.recordTerminalDuplicate();
+            return;
+        }
+
+        var payload = {
+            "v" => 1,
+            "q" => _sequence,
+            "st" => 4
+        };
+        if (_cachedRunStart != null) {
+            payload["rt"] = _cachedRunStart;
+        }
+
+        _sender.enqueueTerminal(payload);
+        _sequence += 1;
+        _terminalEnqueued = true;
+        _cachedRunStart = null;
     }
 
     private function statusText() as Lang.String {
