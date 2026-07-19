@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 import { parseServerConfig } from "../src/lib/config";
 import { createLiveSession, redactSessionForLog } from "../src/lib/session-broker";
-import { fixtureRoute, fixtureSnapshot } from "../src/lib/fixtures";
+import { fixtureReplayAfterEnvelopeId, fixtureRoute, fixtureSnapshot } from "../src/lib/fixtures";
 
 const environment = {
   RUNSYNC_API_INTERNAL_URL: "http://api:8080",
@@ -65,18 +65,25 @@ describe("server configuration and session broker", () => {
           { status: 201 },
         ),
       )
-      .mockResolvedValueOnce(Response.json(fixtureSnapshot))
-      .mockResolvedValueOnce(Response.json(fixtureRoute));
+      .mockResolvedValueOnce(
+        Response.json({
+          snapshot: fixtureSnapshot,
+          route: fixtureRoute,
+          replayAfterEnvelopeId: fixtureReplayAfterEnvelopeId,
+        }),
+      );
     const output = await createLiveSession(config, fetcher);
     expect(fetcher.mock.calls[0]?.[1]?.headers).toEqual(
       expect.objectContaining({ Authorization: "Bearer rs_permanent" }),
     );
     expect(output.viewerToken).toBe("short-viewer");
+    expect(output.replayAfterEnvelopeId).toBe(fixtureReplayAfterEnvelopeId);
+    expect(fetcher.mock.calls[1]?.[0]).toBe("http://api:8080/v1/channels/live/bootstrap");
     expect(JSON.stringify(output)).not.toContain("rs_permanent");
     expect(JSON.stringify(output)).not.toContain("api:8080");
   });
 
-  it("retries a torn snapshot and route pair until their identities match", async () => {
+  it("rejects an invalid combined bootstrap without falling back to torn legacy reads", async () => {
     const config = parseServerConfig(environment, () => "rs_permanent");
     const otherActivityId = "485cc805-e423-4dbf-bfa6-ddc0d07df784";
     const fetcher = vi
@@ -87,38 +94,16 @@ describe("server configuration and session broker", () => {
           { status: 201 },
         ),
       )
-      .mockResolvedValueOnce(Response.json(fixtureSnapshot))
-      .mockResolvedValueOnce(Response.json({ ...fixtureRoute, activityId: otherActivityId }))
-      .mockResolvedValueOnce(Response.json(fixtureSnapshot))
-      .mockResolvedValueOnce(Response.json(fixtureRoute));
+      .mockResolvedValueOnce(
+        Response.json({
+          snapshot: fixtureSnapshot,
+          route: { ...fixtureRoute, activityId: otherActivityId },
+          replayAfterEnvelopeId: fixtureReplayAfterEnvelopeId,
+        }),
+      );
 
-    await expect(createLiveSession(config, fetcher)).resolves.toMatchObject({
-      snapshot: { activityId: fixtureSnapshot.activityId },
-      route: { activityId: fixtureRoute.activityId },
-    });
-    expect(fetcher).toHaveBeenCalledTimes(5);
-  });
-
-  it("bounds retries when the bootstrap pair remains inconsistent", async () => {
-    const config = parseServerConfig(environment, () => "rs_permanent");
-    const otherActivityId = "485cc805-e423-4dbf-bfa6-ddc0d07df784";
-    let bootstrapCalls = 0;
-    const fetcher = vi.fn<typeof fetch>(async (input) => {
-      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-      if (url.endsWith("/v1/viewer-tokens")) {
-        return Response.json(
-          { token: "short-viewer", expiresAt: "2026-07-12T18:47:12.410Z" },
-          { status: 201 },
-        );
-      }
-      bootstrapCalls += 1;
-      return url.endsWith("/snapshot")
-        ? Response.json(fixtureSnapshot)
-        : Response.json({ ...fixtureRoute, activityId: otherActivityId });
-    });
-
-    await expect(createLiveSession(config, fetcher)).rejects.toThrow("after 3 attempts");
-    expect(bootstrapCalls).toBe(6);
+    await expect(createLiveSession(config, fetcher)).rejects.toThrow();
+    expect(fetcher).toHaveBeenCalledTimes(2);
   });
 
   it("redacts bearer values from server errors", () => {

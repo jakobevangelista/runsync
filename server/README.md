@@ -1,6 +1,6 @@
 # RunSync server
 
-The server is a Go 1.26 `net/http` service backed by PostgreSQL 18. It accepts exact-ID telemetry batches and exposes policy-filtered channel snapshots and SSE.
+The server is a Go 1.26 `net/http` service backed by PostgreSQL 18. It accepts exact-ID telemetry batches and exposes policy-filtered channel bootstraps and SSE.
 
 ## Local setup
 
@@ -37,14 +37,15 @@ go run ./cmd/runsync serve
 
 - `POST /v1/telemetry/batches`: requires `telemetry:write`; maximum 100 envelopes and 256 KiB.
 - `POST /v1/viewer-tokens`: requires `channels:read`; viewer lifetime is at most five minutes.
-- `GET /v1/channels/{slug}/snapshot`: accepts a read service credential or viewer token.
-- `GET /v1/channels/{slug}/route`: accepts a read service credential or viewer token and returns at most 5,000 policy-filtered points for the active activity.
+- `GET /v1/channels/{slug}/bootstrap`: accepts a read service credential or viewer token and returns one repeatable-read snapshot, policy-filtered route, and `replayAfterEnvelopeId` ingest high-water.
+- `GET /v1/channels/{slug}/snapshot`: legacy read accepting a read service credential or viewer token.
+- `GET /v1/channels/{slug}/route`: legacy read accepting a read service credential or viewer token.
 - `GET /v1/channels/{slug}/stream`: requires a viewer token and a streaming client that can set `Authorization`.
 - `GET /healthz` and `GET /readyz`: minimal liveness and database readiness.
 
 All bearer tokens belong in the `Authorization` header. SSE replay uses `Last-Event-ID`, never a URL token.
 
-Viewer-token expiry is enforced for already-open streams. Replay IDs remain envelope UUIDs, while the server resolves them to a durable per-user ingest cursor so delayed phone timestamps are not skipped.
+Viewer-token expiry is enforced for already-open streams. Replay IDs remain envelope UUIDs, while the server resolves them to a durable per-user ingest cursor so delayed phone timestamps are not skipped. Bootstrap and legacy full routes are ordered by phone receipt time and envelope UUID, then deterministically downsampled to at most 5,000 points while preserving both endpoints. The browser also caps live rendered geometry at 5,000 points; this is a display bound, not an ingestion or retention limit.
 
 ## Proxy trust
 

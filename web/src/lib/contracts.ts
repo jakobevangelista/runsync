@@ -60,12 +60,28 @@ export const fullRouteSchema = z.object({
   serverTime: z.iso.datetime(),
 });
 
+export const bootstrapSchema = z
+  .object({
+    snapshot: snapshotSchema,
+    route: fullRouteSchema,
+    replayAfterEnvelopeId: UUID.nullable(),
+  })
+  .superRefine((bootstrap, context) => {
+    if (
+      bootstrap.snapshot.channelId !== bootstrap.route.channelId ||
+      (bootstrap.snapshot.activityId ?? null) !== (bootstrap.route.activityId ?? null)
+    ) {
+      context.addIssue({ code: "custom", message: "bootstrap identities must match" });
+    }
+  });
+
 export const sessionSchema = z.object({
   viewerToken: z.string().min(1),
   expiresAt: z.iso.datetime(),
   apiPublicUrl: z.url(),
   channelSlug: z.string().min(1),
   mapboxAccessToken: mapboxAccessTokenSchema,
+  replayAfterEnvelopeId: UUID.nullable(),
   snapshot: snapshotSchema,
   route: fullRouteSchema,
 });
@@ -74,6 +90,7 @@ export type Sample = z.infer<typeof sampleSchema>;
 export type Snapshot = z.infer<typeof snapshotSchema>;
 export type RoutePoint = z.infer<typeof routePointSchema>;
 export type FullRoute = z.infer<typeof fullRouteSchema>;
+export type Bootstrap = z.infer<typeof bootstrapSchema>;
 export type LiveSession = z.infer<typeof sessionSchema>;
 export type Units = "imperial" | "metric";
 export type PaceMode = "rolling" | "average";

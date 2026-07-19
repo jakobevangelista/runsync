@@ -1,9 +1,8 @@
-import { fullRouteSchema, sessionSchema, snapshotSchema, type LiveSession } from "./contracts";
+import { bootstrapSchema, sessionSchema, type LiveSession } from "./contracts";
 import type { ServerConfig } from "./config";
-import { fixtureRoute, fixtureSnapshot } from "./fixtures";
+import { fixtureReplayAfterEnvelopeId, fixtureRoute, fixtureSnapshot } from "./fixtures";
 
 type Fetch = typeof fetch;
-const BOOTSTRAP_ATTEMPTS = 3;
 
 export async function createLiveSession(
   config: ServerConfig,
@@ -16,6 +15,7 @@ export async function createLiveSession(
       apiPublicUrl: config.apiPublicUrl,
       channelSlug: config.channelSlug,
       mapboxAccessToken: config.mapboxAccessToken,
+      replayAfterEnvelopeId: fixtureReplayAfterEnvelopeId,
       snapshot: { ...fixtureSnapshot, slug: config.channelSlug },
       route: fixtureRoute,
     });
@@ -34,36 +34,19 @@ export async function createLiveSession(
   const tokenBody = zViewerToken.parse(await tokenResponse.json());
   const headers = { Authorization: `Bearer ${tokenBody.token}` };
   const slug = encodeURIComponent(config.channelSlug);
-  let bootstrap: { snapshot: unknown; route: unknown } | undefined;
-  for (let attempt = 0; attempt < BOOTSTRAP_ATTEMPTS; attempt += 1) {
-    const [snapshotResponse, routeResponse] = await Promise.all([
-      fetcher(`${config.apiInternalUrl}/v1/channels/${slug}/snapshot`, {
-        headers,
-        cache: "no-store",
-      }),
-      fetcher(`${config.apiInternalUrl}/v1/channels/${slug}/route`, {
-        headers,
-        cache: "no-store",
-      }),
-    ]);
-    if (!snapshotResponse.ok || !routeResponse.ok) throw new Error("live bootstrap fetch failed");
-    const snapshot = snapshotSchema.parse(await snapshotResponse.json());
-    const route = fullRouteSchema.parse(await routeResponse.json());
-    if (
-      snapshot.channelId === route.channelId &&
-      (snapshot.activityId ?? null) === (route.activityId ?? null)
-    ) {
-      bootstrap = { snapshot, route };
-      break;
-    }
-  }
-  if (!bootstrap) throw new Error("live bootstrap remained inconsistent after 3 attempts");
+  const bootstrapResponse = await fetcher(
+    `${config.apiInternalUrl}/v1/channels/${slug}/bootstrap`,
+    { headers, cache: "no-store" },
+  );
+  if (!bootstrapResponse.ok) throw new Error("live bootstrap fetch failed");
+  const bootstrap = bootstrapSchema.parse(await bootstrapResponse.json());
   return sessionSchema.parse({
     viewerToken: tokenBody.token,
     expiresAt: tokenBody.expiresAt,
     apiPublicUrl: config.apiPublicUrl,
     channelSlug: config.channelSlug,
     mapboxAccessToken: config.mapboxAccessToken,
+    replayAfterEnvelopeId: bootstrap.replayAfterEnvelopeId,
     snapshot: bootstrap.snapshot,
     route: bootstrap.route,
   });

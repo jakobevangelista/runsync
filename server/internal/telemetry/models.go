@@ -1,6 +1,7 @@
 package telemetry
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -8,6 +9,26 @@ import (
 )
 
 const MaxBatch = 100
+
+type ValidationCode string
+
+const (
+	ValidationInvalidRequest      ValidationCode = "invalid_request"
+	ValidationInvalidEnvelope     ValidationCode = "invalid_envelope"
+	ValidationUnsupportedProtocol ValidationCode = "unsupported_protocol"
+)
+
+type ValidationError struct {
+	Code       ValidationCode
+	EnvelopeID *uuid.UUID
+	reason     string
+}
+
+func (e *ValidationError) Error() string { return e.reason }
+
+func validationError(code ValidationCode, envelopeID *uuid.UUID, reason string) error {
+	return &ValidationError{Code: code, EnvelopeID: envelopeID, reason: reason}
+}
 
 type Batch struct {
 	InstallationID uuid.UUID  `json:"installationId"`
@@ -42,39 +63,56 @@ type Sample struct {
 
 func (b Batch) Validate(now time.Time) error {
 	if b.InstallationID == uuid.Nil {
-		return fmt.Errorf("installationId is required")
+		return validationError(ValidationInvalidRequest, nil, "installationId is required")
 	}
 	if len(b.Envelopes) == 0 || len(b.Envelopes) > MaxBatch {
-		return fmt.Errorf("envelopes must contain 1..%d entries", MaxBatch)
+		return validationError(ValidationInvalidRequest, nil, fmt.Sprintf("envelopes must contain 1..%d entries", MaxBatch))
+	}
+	for i, e := range b.Envelopes {
+		if e.Sample.ProtocolVersion != 1 {
+			return validationError(ValidationUnsupportedProtocol, nil, fmt.Sprintf("envelopes[%d]: unsupported protocolVersion", i))
+		}
 	}
 	seen := map[uuid.UUID]bool{}
 	for i, e := range b.Envelopes {
 		if e.EnvelopeID == uuid.Nil || e.ActivityID == uuid.Nil || e.GarminDeviceIdentifier == uuid.Nil {
-			return fmt.Errorf("envelopes[%d]: identifiers are required", i)
+			return invalidEnvelope(e.EnvelopeID, fmt.Sprintf("envelopes[%d]: identifiers are required", i))
 		}
 		if seen[e.EnvelopeID] {
-			return fmt.Errorf("envelopes[%d]: duplicate envelopeId in batch", i)
+			return invalidEnvelope(e.EnvelopeID, fmt.Sprintf("envelopes[%d]: duplicate envelopeId in batch", i))
 		}
 		seen[e.EnvelopeID] = true
 		if e.PhoneReceivedAt.IsZero() || e.PhoneReceivedAt.After(now.Add(5*time.Minute)) {
-			return fmt.Errorf("envelopes[%d]: invalid phoneReceivedAt", i)
+			return invalidEnvelope(e.EnvelopeID, fmt.Sprintf("envelopes[%d]: invalid phoneReceivedAt", i))
 		}
 		if len(e.AppVersion) < 1 || len(e.AppVersion) > 64 {
-			return fmt.Errorf("envelopes[%d]: invalid appVersion", i)
+			return invalidEnvelope(e.EnvelopeID, fmt.Sprintf("envelopes[%d]: invalid appVersion", i))
 		}
 		if err := e.Sample.Validate(); err != nil {
-			return fmt.Errorf("envelopes[%d]: %w", i, err)
+			var validation *ValidationError
+			if errors.As(err, &validation) && validation.Code == ValidationUnsupportedProtocol {
+				return validationError(ValidationUnsupportedProtocol, nil, fmt.Sprintf("envelopes[%d]: %s", i, err))
+			}
+			return invalidEnvelope(e.EnvelopeID, fmt.Sprintf("envelopes[%d]: %s", i, err))
 		}
 	}
 	return nil
 }
 
+func invalidEnvelope(envelopeID uuid.UUID, reason string) error {
+	if envelopeID == uuid.Nil {
+		return validationError(ValidationInvalidEnvelope, nil, reason)
+	}
+	id := envelopeID
+	return validationError(ValidationInvalidEnvelope, &id, reason)
+}
+
 func (s Sample) Validate() error {
 	if s.ProtocolVersion != 1 {
-		return fmt.Errorf("unsupported protocolVersion")
+		return validationError(ValidationUnsupportedProtocol, nil, "unsupported protocolVersion")
 	}
 	if s.Sequence < 0 || int64(s.Sequence) > 2147483647 || s.State < 0 || s.State > 4 {
-		return fmt.Errorf("invalid sequence or state")
+		return validationError(ValidationInvalidEnvelope, nil, "invalid sequence or state")
 	}
 	if err := bounded("activityStartEpochSeconds", s.ActivityStartEpochSeconds, 0, 2147483647); err != nil {
 		return err
@@ -91,7 +129,7 @@ func (s Sample) Validate() error {
 		return err
 	}
 	if (s.LatitudeMicrodegrees == nil) != (s.LongitudeMicrodegrees == nil) {
-		return fmt.Errorf("coordinates must both be present or absent")
+		return validationError(ValidationInvalidEnvelope, nil, "coordinates must both be present or absent")
 	}
 	if err := bounded("latitudeMicrodegrees", s.LatitudeMicrodegrees, -90000000, 90000000); err != nil {
 		return err
@@ -100,7 +138,7 @@ func (s Sample) Validate() error {
 		return err
 	}
 	if s.GPSQuality != nil && (*s.GPSQuality < 0 || *s.GPSQuality > 4) {
-		return fmt.Errorf("gpsQuality is out of range")
+		return validationError(ValidationInvalidEnvelope, nil, "gpsQuality is out of range")
 	}
 	if err := bounded("altitudeDecimeters", s.AltitudeDecimeters, -2147483648, 2147483647); err != nil {
 		return err
@@ -110,7 +148,7 @@ func (s Sample) Validate() error {
 
 func bounded(name string, value *int, min, max int) error {
 	if value != nil && (*value < min || *value > max) {
-		return fmt.Errorf("%s is out of range", name)
+		return validationError(ValidationInvalidEnvelope, nil, fmt.Sprintf("%s is out of range", name))
 	}
 	return nil
 }

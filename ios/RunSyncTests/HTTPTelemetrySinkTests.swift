@@ -99,7 +99,46 @@ final class HTTPTelemetrySinkTests: XCTestCase {
             _ = try await sink.submit([envelope])
             XCTFail("Expected permanent failure")
         } catch let error as TelemetrySinkError {
-            XCTAssertEqual(error, .permanent(reason: "Authentication rejected"))
+            XCTAssertEqual(error, .authentication)
+        }
+    }
+
+    func testDecodesOnlySafeStructuredRejectionFields() async throws {
+        let envelope = TelemetryTestSupport.envelope()
+        TestURLProtocol.handler = { request in
+            Self.response(request, status: 422, body: """
+                {"error":{"code":"invalid_envelope","envelopeId":"\(envelope.id.uuidString)","retryable":false,"message":"must not escape"}}
+                """)
+        }
+        let sink = HTTPTelemetrySink(configuration: configuration, session: session)
+
+        do {
+            _ = try await sink.submit([envelope])
+            XCTFail("Expected structured rejection")
+        } catch let error as TelemetrySinkError {
+            XCTAssertEqual(error, .rejected(TelemetryServerRejection(
+                statusCode: 422,
+                code: .invalidEnvelope,
+                envelopeID: envelope.id,
+                retryable: false
+            )))
+        }
+
+        TestURLProtocol.handler = { request in
+            Self.response(request, status: 409, body: """
+                {"error":{"code":"unsafe server prose","envelopeId":"not-a-uuid","retryable":false}}
+                """)
+        }
+        do {
+            _ = try await sink.submit([envelope])
+            XCTFail("Expected safely reduced rejection")
+        } catch let error as TelemetrySinkError {
+            XCTAssertEqual(error, .rejected(TelemetryServerRejection(
+                statusCode: 409,
+                code: nil,
+                envelopeID: nil,
+                retryable: false
+            )))
         }
     }
 
@@ -125,6 +164,59 @@ final class HTTPTelemetrySinkTests: XCTestCase {
         } catch let error as TelemetrySinkError {
             XCTAssertEqual(error, .transient(retryAfter: nil))
         }
+    }
+
+    func testDedicatedForegroundSessionPolicy() {
+        let foregroundSession = HTTPTelemetrySink.makeForegroundSession()
+        defer { foregroundSession.invalidateAndCancel() }
+        let configuration = foregroundSession.configuration
+
+        XCTAssertTrue(configuration.waitsForConnectivity)
+        XCTAssertEqual(configuration.timeoutIntervalForRequest, 30)
+        XCTAssertEqual(configuration.timeoutIntervalForResource, 300)
+        XCTAssertTrue(configuration.allowsCellularAccess)
+        XCTAssertTrue(configuration.allowsExpensiveNetworkAccess)
+        XCTAssertTrue(configuration.allowsConstrainedNetworkAccess)
+    }
+
+    func testRedirectIsRejectedAndClassifiedWithoutFollowing() async throws {
+        let envelope = TelemetryTestSupport.envelope()
+        TestURLProtocol.handler = { request in
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 307,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Location": "https://other.example/v1/telemetry/batches"]
+            )!
+            return (response, Data())
+        }
+        let sink = HTTPTelemetrySink(configuration: configuration, session: session)
+
+        do {
+            _ = try await sink.submit([envelope])
+            XCTFail("Expected redirect rejection")
+        } catch let error as TelemetrySinkError {
+            XCTAssertEqual(error, .permanent(reason: "Unexpected server redirect"))
+        }
+
+        let delegate = TelemetryRedirectRejectingDelegate()
+        let redirectRequest = URLRequest(url: URL(string: "https://other.example/v1/telemetry/batches")!)
+        let originalRequest = URLRequest(url: URL(string: "https://example.com/v1/telemetry/batches")!)
+        let task = URLSession.shared.dataTask(with: originalRequest)
+        let response = HTTPURLResponse(
+            url: originalRequest.url!, statusCode: 307, httpVersion: nil, headerFields: nil
+        )!
+        let rejected = expectation(description: "redirect rejected")
+        delegate.urlSession(
+            .shared,
+            task: task,
+            willPerformHTTPRedirection: response,
+            newRequest: redirectRequest
+        ) { request in
+            XCTAssertNil(request)
+            rejected.fulfill()
+        }
+        await fulfillment(of: [rejected], timeout: 1)
     }
 
     private static func response(

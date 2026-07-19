@@ -1,6 +1,7 @@
 package telemetry
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -37,6 +38,80 @@ func TestMetricBounds(t *testing.T) {
 			tc.mutate(&s)
 			if s.Validate() == nil {
 				t.Fatal("invalid metric accepted")
+			}
+		})
+	}
+}
+
+func TestBatchValidationClassifiesSafeEnvelopeAttribution(t *testing.T) {
+	now := time.Now()
+	envelopeID := uuid.New()
+	tests := []struct {
+		name       string
+		mutate     func(*Batch)
+		code       ValidationCode
+		envelopeID *uuid.UUID
+	}{
+		{
+			name: "request-wide",
+			mutate: func(b *Batch) {
+				b.InstallationID = uuid.Nil
+			},
+			code: ValidationInvalidRequest,
+		},
+		{
+			name: "unsupported protocol is request-wide",
+			mutate: func(b *Batch) {
+				b.Envelopes[0].Sample.ProtocolVersion = 2
+			},
+			code: ValidationUnsupportedProtocol,
+		},
+		{
+			name: "unsupported protocol takes request-wide precedence",
+			mutate: func(b *Batch) {
+				b.Envelopes[0].Sample.State = 5
+				second := b.Envelopes[0]
+				second.EnvelopeID = uuid.New()
+				second.Sample.State = 1
+				second.Sample.ProtocolVersion = 2
+				b.Envelopes = append(b.Envelopes, second)
+			},
+			code: ValidationUnsupportedProtocol,
+		},
+		{
+			name: "identified invalid envelope",
+			mutate: func(b *Batch) {
+				b.Envelopes[0].EnvelopeID = envelopeID
+				b.Envelopes[0].Sample.State = 5
+			},
+			code:       ValidationInvalidEnvelope,
+			envelopeID: &envelopeID,
+		},
+		{
+			name: "invalid envelope without safe identifier",
+			mutate: func(b *Batch) {
+				b.Envelopes[0].EnvelopeID = uuid.Nil
+			},
+			code: ValidationInvalidEnvelope,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			batch := validBatch()
+			tc.mutate(&batch)
+			var validation *ValidationError
+			if err := batch.Validate(now); !errors.As(err, &validation) {
+				t.Fatalf("error = %v, want ValidationError", err)
+			}
+			if validation.Code != tc.code {
+				t.Fatalf("code = %q, want %q", validation.Code, tc.code)
+			}
+			if tc.envelopeID == nil {
+				if validation.EnvelopeID != nil {
+					t.Fatalf("envelope ID = %s, want nil", validation.EnvelopeID)
+				}
+			} else if validation.EnvelopeID == nil || *validation.EnvelopeID != *tc.envelopeID {
+				t.Fatalf("envelope ID = %v, want %s", validation.EnvelopeID, *tc.envelopeID)
 			}
 		})
 	}

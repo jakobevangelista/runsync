@@ -14,6 +14,7 @@ const state = activityReducer(initialActivityState, {
     apiPublicUrl: "https://api.example.test",
     channelSlug: "live",
     mapboxAccessToken: "",
+    replayAfterEnvelopeId: fixtureSnapshot.latest!.envelopeId,
     snapshot: fixtureSnapshot,
     route: fixtureRoute,
   },
