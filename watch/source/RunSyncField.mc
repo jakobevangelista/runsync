@@ -21,6 +21,7 @@ class RunSyncField extends WatchUi.DataField {
     }
 
     function compute(info as Activity.Info) as Void {
+        var now = System.getTimer();
         _hasGPS = info has :currentLocation && info.currentLocation != null;
         var payload = _encoder.encode(info, _sequence, _state);
         _state = payload["st"] as Lang.Number;
@@ -28,7 +29,7 @@ class RunSyncField extends WatchUi.DataField {
             _cachedRunStart = info.startTime.value();
         }
         _sequence += 1;
-        _sender.enqueue(payload);
+        _sender.enqueue(payload, now);
     }
 
     function onUpdate(dc as Graphics.Dc) as Void {
@@ -84,7 +85,7 @@ class RunSyncField extends WatchUi.DataField {
             payload["rt"] = _cachedRunStart;
         }
 
-        _sender.enqueueTerminal(payload);
+        _sender.enqueueTerminal(payload, System.getTimer());
         _sequence += 1;
         _terminalEnqueued = true;
         _cachedRunStart = null;
@@ -103,21 +104,24 @@ class RunSyncField extends WatchUi.DataField {
         if (!_hasGPS) {
             return "WAIT GPS";
         }
-        if (_sender.errorCount > 0 && _sender.lastCompleteTimer == null) {
+        var failureCount = _sender.consecutiveFailureCount();
+        if (failureCount >= 3) {
             return "NO PHONE";
         }
-        if (_sender.lastCompleteTimer != null && completeAgeSeconds() > 10) {
-            return "DELAYED";
+        if (failureCount > 0) {
+            return "RETRY";
         }
-        if (_state == 1) {
+        if (!_sender.hasCompleted()) {
+            return "CONNECT";
+        }
+        if (completeAgeSeconds() <= 10) {
             return "LIVE";
         }
-
-        return "READY";
+        return "DELAYED";
     }
 
     private function detailText() as Lang.String {
-        if (_sender.lastCompleteTimer == null) {
+        if (!_sender.hasCompleted()) {
             return "Q " + _sequence.format("%d");
         }
 
@@ -125,10 +129,6 @@ class RunSyncField extends WatchUi.DataField {
     }
 
     private function completeAgeSeconds() as Lang.Number {
-        if (_sender.lastCompleteTimer == null) {
-            return 0;
-        }
-
-        return ((System.getTimer() - (_sender.lastCompleteTimer as Lang.Number)) / 1000).toNumber();
+        return _sender.completionAgeSeconds(System.getTimer());
     }
 }

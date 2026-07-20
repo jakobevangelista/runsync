@@ -94,7 +94,18 @@ monkeyc \
 monkeydo bin/RunSync-simulator.prg fr965
 ```
 
-The simulator build uses a no-op transport because Garmin's simulator companion messaging is Android-only. It validates the Data Field and telemetry generation but cannot validate the iPhone BLE path.
+The simulator build uses a deterministic local transport because Garmin's simulator companion messaging is Android-only. It completes transmissions immediately by default and supports injected failures for sender recovery testing, but it cannot validate the iPhone BLE path.
+
+Compile and run the deterministic sender tests with:
+
+```sh
+monkeyc -t \
+  -d fr965 \
+  -f test.jungle \
+  -o bin/RunSync-tests.prg \
+  -y "$HOME/.garmin/developer_key.der"
+monkeydo bin/RunSync-tests.prg fr965 -t
+```
 
 ## Sideload onto the Forerunner 965
 

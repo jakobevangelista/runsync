@@ -18,6 +18,13 @@ monkeyc -d fr965 -f simulator.jungle -o bin/RunSync-simulator.prg -y "$HOME/.gar
 monkeydo bin/RunSync-simulator.prg fr965
 ```
 
-`simulator.jungle` replaces BLE transmission with a no-op sender because Garmin's desktop simulator can connect to companion apps only through Android ADB. Use the physical `RunSync.prg` build for watch-to-iPhone messaging.
+`simulator.jungle` replaces BLE transmission with a deterministic local sender because Garmin's desktop simulator can connect to companion apps only through Android ADB. It completes attempts immediately by default and supports injected error, exception, missing-callback, and delayed-callback outcomes. Use the physical `RunSync.prg` build for watch-to-iPhone messaging.
+
+Compile the deterministic sender tests with:
+
+```sh
+monkeyc -t -d fr965 -f test.jungle -o bin/RunSync-tests.prg -y "$HOME/.garmin/developer_key.der"
+monkeydo bin/RunSync-tests.prg fr965 -t
+```
 
 The manifest application UUID is `C2ABF013-EA3B-49DD-82E6-FC0B87C27474`. The iOS app must use the same UUID.
