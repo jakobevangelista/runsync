@@ -203,7 +203,7 @@ final class BackgroundTelemetryUploadTests: XCTestCase {
         }
     }
 
-    func testPartialAndAuthenticationCompletionsAreClassifiedAndUnstaged() async throws {
+    func testPartialCompletionAcknowledgesDurablyAndResetsStagingForRetry() async throws {
         let environment = try TestEnvironment()
         defer { environment.remove() }
         let firstEnvelope = TelemetryTestSupport.envelope()
@@ -221,9 +221,13 @@ final class BackgroundTelemetryUploadTests: XCTestCase {
         let finalizer = BackgroundUploadFinalizer(
             archive: environment.archive,
             control: environment.control,
-            queue: environment.queue
+            queue: environment.queue,
+            now: { Date(timeIntervalSince1970: 100) }
         )
         let partial = try await environment.queue.prepare(envelopes, fence: fence)
+        var assignedPartial = partial.metadata
+        assignedPartial.taskIdentifier = 23
+        try await environment.queue.commit(assignedPartial)
         let partialResponse = HTTPURLResponse(
             url: environment.server.baseURL,
             statusCode: 200,
@@ -231,7 +235,7 @@ final class BackgroundTelemetryUploadTests: XCTestCase {
             headerFields: ["Content-Type": "application/json"]
         )!
         let partialOutcome = await finalizer.finalize(
-            metadata: partial.metadata,
+            metadata: assignedPartial,
             completed: .init(
                 response: partialResponse,
                 data: Data("{\"acknowledgedEnvelopeIds\":[\"\(envelopes[0].id.uuidString)\"],\"serverTime\":\"2026-07-19T12:00:00Z\"}".utf8),
@@ -240,8 +244,131 @@ final class BackgroundTelemetryUploadTests: XCTestCase {
             error: nil
         )
         XCTAssertEqual(partialOutcome, .partial([envelopes[0].id]))
+        let partialAcknowledgements = try await environment.archive.acknowledgedIDs(
+            runID: envelopes[0].localRunID
+        )
+        let partialBatches = try await environment.queue.batches()
+        let retainedPartial = try XCTUnwrap(partialBatches.first(where: {
+            $0.metadata.batchID == partial.metadata.batchID
+        }))
+        XCTAssertEqual(partialAcknowledgements, [envelopes[0].id])
+        XCTAssertEqual(retainedPartial.metadata.taskIdentifier, -1)
+        XCTAssertEqual(retainedPartial.metadata.retryAttempt, 1)
+        XCTAssertEqual(retainedPartial.metadata.retryNotBefore, Date(timeIntervalSince1970: 101))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: retainedPartial.bodyURL.path))
+    }
 
-        let authentication = try await environment.queue.prepare([envelopes[0]], fence: fence)
+    func testTransientCompletionRetainsBodyAndResetsStagingForRetry() async throws {
+        let environment = try TestEnvironment()
+        defer { environment.remove() }
+        let envelope = TelemetryTestSupport.envelope()
+        let fence = try await environment.synchronize(installationID: envelope.installationID)
+        let prepared = try await environment.queue.prepare([envelope], fence: fence)
+        var assigned = prepared.metadata
+        assigned.taskIdentifier = 24
+        try await environment.queue.commit(assigned)
+        let finalizer = BackgroundUploadFinalizer(
+            archive: environment.archive,
+            control: environment.control,
+            queue: environment.queue,
+            now: { Date(timeIntervalSince1970: 200) }
+        )
+
+        let outcome = await finalizer.finalize(
+            metadata: assigned,
+            completed: .init(response: nil, data: Data(), redirected: false),
+            error: URLError(.timedOut)
+        )
+
+        let retainedBatches = try await environment.queue.batches()
+        let retained = try XCTUnwrap(retainedBatches.first)
+        XCTAssertEqual(outcome, .failed(.transient(retryAfter: nil)))
+        XCTAssertEqual(retained.metadata.taskIdentifier, -1)
+        XCTAssertEqual(retained.metadata.retryAttempt, 1)
+        XCTAssertEqual(retained.metadata.retryNotBefore, Date(timeIntervalSince1970: 201))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: retained.bodyURL.path))
+    }
+
+    func testMalformedSuccessAndArchiveAcknowledgementUncertaintyRetainStaging() async throws {
+        let malformedEnvironment = try TestEnvironment()
+        defer { malformedEnvironment.remove() }
+        let malformedEnvelope = TelemetryTestSupport.envelope()
+        let malformedFence = try await malformedEnvironment.synchronize(
+            installationID: malformedEnvelope.installationID
+        )
+        let malformed = try await malformedEnvironment.queue.prepare(
+            [malformedEnvelope],
+            fence: malformedFence
+        )
+        let malformedFinalizer = BackgroundUploadFinalizer(
+            archive: malformedEnvironment.archive,
+            control: malformedEnvironment.control,
+            queue: malformedEnvironment.queue
+        )
+        let response = HTTPURLResponse(
+            url: malformedEnvironment.server.baseURL,
+            statusCode: 200,
+            httpVersion: nil,
+            headerFields: ["Content-Type": "application/json"]
+        )!
+
+        let malformedOutcome = await malformedFinalizer.finalize(
+            metadata: malformed.metadata,
+            completed: .init(
+                response: response,
+                data: Data("{\"acknowledgedEnvelopeIds\":[]}".utf8),
+                redirected: false
+            ),
+            error: nil
+        )
+        XCTAssertEqual(malformedOutcome, .failed(.transient(retryAfter: nil)))
+        let malformedBatches = try await malformedEnvironment.queue.batches()
+        XCTAssertEqual(malformedBatches.count, 1)
+
+        let archiveEnvironment = try TestEnvironment()
+        defer { archiveEnvironment.remove() }
+        let archiveEnvelope = TelemetryTestSupport.envelope()
+        let archiveFence = try await archiveEnvironment.synchronize(
+            installationID: archiveEnvelope.installationID
+        )
+        let uncertain = try await archiveEnvironment.queue.prepare(
+            [archiveEnvelope],
+            fence: archiveFence
+        )
+        try Data("not-a-directory".utf8).write(to: archiveEnvironment.runsURL)
+        let archiveFinalizer = BackgroundUploadFinalizer(
+            archive: archiveEnvironment.archive,
+            control: archiveEnvironment.control,
+            queue: archiveEnvironment.queue
+        )
+
+        let uncertainOutcome = await archiveFinalizer.finalize(
+            metadata: uncertain.metadata,
+            completed: successfulCompletion(
+                envelopeID: archiveEnvelope.id,
+                url: archiveEnvironment.server.baseURL
+            ),
+            error: nil
+        )
+        let retainedBatches = try await archiveEnvironment.queue.batches()
+        let retained = try XCTUnwrap(retainedBatches.first)
+        XCTAssertEqual(uncertainOutcome, .failed(.transient(retryAfter: nil)))
+        XCTAssertEqual(retained.metadata.taskIdentifier, -1)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: retained.bodyURL.path))
+    }
+
+    func testAuthenticationAndPermanentCompletionsUnstageBlockedBatches() async throws {
+        let environment = try TestEnvironment()
+        defer { environment.remove() }
+        let envelope = TelemetryTestSupport.envelope()
+        let fence = try await environment.synchronize(installationID: envelope.installationID)
+        let finalizer = BackgroundUploadFinalizer(
+            archive: environment.archive,
+            control: environment.control,
+            queue: environment.queue
+        )
+
+        let authentication = try await environment.queue.prepare([envelope], fence: fence)
         let authenticationOutcome = await finalizer.finalize(
             metadata: authentication.metadata,
             completed: .init(
@@ -257,8 +384,142 @@ final class BackgroundTelemetryUploadTests: XCTestCase {
             error: nil
         )
         XCTAssertEqual(authenticationOutcome, .failed(.authentication))
+
+        let permanent = try await environment.queue.prepare([envelope], fence: fence)
+        let permanentOutcome = await finalizer.finalize(
+            metadata: permanent.metadata,
+            completed: .init(
+                response: nil,
+                data: Data(),
+                redirected: true
+            ),
+            error: nil
+        )
+        XCTAssertEqual(
+            permanentOutcome,
+            .failed(.permanent(reason: "Unexpected server redirect"))
+        )
         let remainingBatches = try await environment.queue.batches()
         XCTAssertTrue(remainingBatches.isEmpty)
+    }
+
+    func testBackgroundRetryPolicyPersistsAttemptsAcrossRelaunchAndHonorsLongRetryAfter() async throws {
+        let environment = try TestEnvironment()
+        defer { environment.remove() }
+        let envelope = TelemetryTestSupport.envelope()
+        let fence = try await environment.synchronize(installationID: envelope.installationID)
+        let prepared = try await environment.queue.prepare([envelope], fence: fence)
+        var firstAssignment = prepared.metadata
+        firstAssignment.taskIdentifier = 40
+        try await environment.queue.commit(firstAssignment)
+
+        let firstRetryResult = try await environment.queue.prepareRetry(
+            batchID: prepared.metadata.batchID,
+            expectedTaskIdentifier: 40,
+            retryAfter: nil,
+            now: Date(timeIntervalSince1970: 1_000)
+        )
+        let firstRetry = try XCTUnwrap(firstRetryResult)
+        XCTAssertEqual(firstRetry.metadata.retryAttempt, 1)
+        XCTAssertEqual(firstRetry.metadata.retryNotBefore, Date(timeIntervalSince1970: 1_001))
+
+        var secondAssignment = firstRetry.metadata
+        secondAssignment.taskIdentifier = 41
+        try await environment.queue.commit(secondAssignment)
+        let relaunchedQueue = BackgroundUploadQueue(rootURL: environment.queueURL)
+        let secondRetryResult = try await relaunchedQueue.prepareRetry(
+            batchID: prepared.metadata.batchID,
+            expectedTaskIdentifier: 41,
+            retryAfter: nil,
+            now: Date(timeIntervalSince1970: 2_000)
+        )
+        let secondRetry = try XCTUnwrap(secondRetryResult)
+        XCTAssertEqual(secondRetry.metadata.retryAttempt, 2)
+        XCTAssertEqual(secondRetry.metadata.retryNotBefore, Date(timeIntervalSince1970: 2_002))
+
+        var thirdAssignment = secondRetry.metadata
+        thirdAssignment.taskIdentifier = 42
+        try await relaunchedQueue.commit(thirdAssignment)
+        let thirdRetryResult = try await relaunchedQueue.prepareRetry(
+            batchID: prepared.metadata.batchID,
+            expectedTaskIdentifier: 42,
+            retryAfter: 3_600,
+            now: Date(timeIntervalSince1970: 3_000)
+        )
+        let thirdRetry = try XCTUnwrap(thirdRetryResult)
+        XCTAssertEqual(thirdRetry.metadata.retryAttempt, 3)
+        XCTAssertEqual(thirdRetry.metadata.retryNotBefore, Date(timeIntervalSince1970: 6_600))
+        XCTAssertEqual(BackgroundTelemetryUploadManager.backgroundRetryDelays, [1, 2, 4, 8, 16, 32, 60, 120, 300])
+        XCTAssertEqual(
+            BackgroundTelemetryUploadManager.backgroundRetryDelay(attempt: 20, retryAfter: nil),
+            300
+        )
+        XCTAssertEqual(
+            BackgroundTelemetryUploadManager.backgroundRetryDelay(attempt: 3, retryAfter: 2),
+            4
+        )
+    }
+
+    func testStaleFinalizerCannotResetNewerTaskAssignment() async throws {
+        let environment = try TestEnvironment()
+        defer { environment.remove() }
+        let envelope = TelemetryTestSupport.envelope()
+        let fence = try await environment.synchronize(installationID: envelope.installationID)
+        let prepared = try await environment.queue.prepare([envelope], fence: fence)
+        var completed = prepared.metadata
+        completed.taskIdentifier = 50
+        try await environment.queue.commit(completed)
+        var newer = completed
+        newer.taskIdentifier = 51
+        try await environment.queue.commit(newer)
+        let finalizer = BackgroundUploadFinalizer(
+            archive: environment.archive,
+            control: environment.control,
+            queue: environment.queue
+        )
+
+        let outcome = await finalizer.finalize(
+            metadata: completed,
+            completed: .init(response: nil, data: Data(), redirected: false),
+            error: URLError(.timedOut)
+        )
+
+        let batches = try await environment.queue.batches()
+        let retained = try XCTUnwrap(batches.first)
+        XCTAssertEqual(outcome, .stale)
+        XCTAssertEqual(retained.metadata.taskIdentifier, 51)
+        XCTAssertEqual(retained.metadata.retryAttempt, 0)
+        XCTAssertNil(retained.metadata.retryNotBefore)
+    }
+
+    func testLegacyMetadataWithoutRetryFieldsDecodesWithDefaults() async throws {
+        let environment = try TestEnvironment()
+        defer { environment.remove() }
+        try FileManager.default.createDirectory(
+            at: environment.queueURL,
+            withIntermediateDirectories: true
+        )
+        let metadata = LegacyBackgroundUploadMetadata(
+            batchID: UUID(),
+            envelopeIDs: [UUID()],
+            activityIDs: [UUID()],
+            configurationGeneration: 2,
+            destinationFingerprint: "legacy",
+            deleteEpoch: 1,
+            taskIdentifier: 12,
+            createdAt: Date(timeIntervalSince1970: 100)
+        )
+        try JSONEncoder().encode(metadata).write(
+            to: environment.queueURL.appendingPathComponent("\(metadata.batchID.uuidString).metadata.json")
+        )
+        try Data("{}".utf8).write(
+            to: environment.queueURL.appendingPathComponent("\(metadata.batchID.uuidString).json")
+        )
+
+        let batches = try await environment.queue.batches()
+        let restored = try XCTUnwrap(batches.first)
+        XCTAssertEqual(restored.metadata.retryAttempt, 0)
+        XCTAssertNil(restored.metadata.retryNotBefore)
     }
 
     func testInterruptedDeleteResumesOnColdLaunchBeforeFilesCanBeScanned() async throws {
@@ -492,6 +753,400 @@ final class BackgroundTelemetryUploadTests: XCTestCase {
         await first.value
         await duplicate.value
         try await deletion.value
+    }
+
+    func testUnownedCleanupCannotDeleteBetweenAssignedCommitAndLeasePublication() async throws {
+        let environment = try TestEnvironment()
+        defer { environment.remove() }
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: UUID().uuidString))
+        let configuration = ServerConfigurationStore(defaults: defaults, tokenStore: TestTokenStore())
+        try await configuration.save(
+            baseURL: environment.server.baseURL.absoluteString,
+            token: environment.server.token
+        )
+        let envelope = TelemetryTestSupport.envelope()
+        try await environment.archive.append(envelope)
+        let assignment = BackgroundCheckpoint()
+        let manager = BackgroundTelemetryUploadManager(
+            archive: environment.archive,
+            configuration: configuration,
+            installationID: envelope.installationID,
+            control: environment.control,
+            queue: environment.queue,
+            activateSession: false,
+            stagingEnabled: { true },
+            assignmentCheckpoint: { await assignment.suspend() }
+        )
+
+        let staging = Task { await manager.stageIfEnabled([envelope]) }
+        await assignment.waitUntilSuspended()
+        let cleanup = Task { await manager.removeUnownedSubmittedBatches() }
+        try await Task.sleep(for: .milliseconds(20))
+        let committed = try await environment.queue.batches()
+        XCTAssertEqual(committed.count, 1)
+        XCTAssertGreaterThanOrEqual(try XCTUnwrap(committed.first).metadata.taskIdentifier, 0)
+
+        await assignment.resume()
+        await staging.value
+        await cleanup.value
+
+        let retained = try await environment.queue.batches()
+        XCTAssertEqual(retained.count, 1)
+        XCTAssertEqual(manager.leasedEnvelopeIDs(), [envelope.id])
+        try await manager.deleteAllTelemetry()
+    }
+
+    func testFinalizingOwnershipPreventsForegroundSubmissionUntilReplacementLeaseIsPublished() async throws {
+        let environment = try TestEnvironment()
+        defer { environment.remove() }
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: UUID().uuidString))
+        let configuration = ServerConfigurationStore(defaults: defaults, tokenStore: TestTokenStore())
+        try await configuration.save(
+            baseURL: environment.server.baseURL.absoluteString,
+            token: environment.server.token
+        )
+        let envelope = TelemetryTestSupport.envelope()
+        try await environment.archive.append(envelope)
+        let binding = try await environment.control.bind(
+            snapshot: try await configuration.snapshot(),
+            installationID: envelope.installationID
+        )
+        let fence = try XCTUnwrap(binding.binding?.fence)
+        let prepared = try await environment.queue.prepare([envelope], fence: fence)
+        var completedMetadata = prepared.metadata
+        completedMetadata.taskIdentifier = 77
+        try await environment.queue.commit(completedMetadata)
+        let finalization = BackgroundCheckpoint()
+        let replacementAssignment = BackgroundCheckpoint()
+        let manager = BackgroundTelemetryUploadManager(
+            archive: environment.archive,
+            configuration: configuration,
+            installationID: envelope.installationID,
+            control: environment.control,
+            queue: environment.queue,
+            activateSession: false,
+            stagingEnabled: { true },
+            assignmentCheckpoint: { await replacementAssignment.suspend() },
+            finalizationCheckpoint: { await finalization.suspend() }
+        )
+        let sink = BackgroundRecordingTelemetrySink()
+        let ingestor = TelemetryIngestor(
+            archive: environment.archive,
+            sink: sink,
+            installationID: envelope.installationID,
+            backgroundUploader: manager
+        )
+
+        let completion = Task {
+            await manager.finalize(
+                taskID: completedMetadata.taskIdentifier,
+                completed: .init(response: nil, data: Data(), redirected: false),
+                error: URLError(.timedOut)
+            )
+        }
+        await finalization.waitUntilSuspended()
+        XCTAssertEqual(manager.leasedEnvelopeIDs(), [envelope.id])
+
+        _ = try await ingestor.recoverPending()
+        let submissionsDuringFinalization = await sink.submissionCount
+        XCTAssertEqual(submissionsDuringFinalization, 0)
+
+        await finalization.resume()
+        await replacementAssignment.waitUntilSuspended()
+        XCTAssertEqual(manager.leasedEnvelopeIDs(), [envelope.id])
+        _ = await ingestor.retryPending(force: true)
+        let submissionsDuringReplacement = await sink.submissionCount
+        XCTAssertEqual(submissionsDuringReplacement, 0)
+
+        await replacementAssignment.resume()
+        await completion.value
+
+        let replacementBatches = try await environment.queue.batches()
+        let replacement = try XCTUnwrap(replacementBatches.first)
+        XCTAssertEqual(manager.leasedEnvelopeIDs(), [envelope.id])
+        XCTAssertNotEqual(replacement.metadata.taskIdentifier, completedMetadata.taskIdentifier)
+        XCTAssertGreaterThanOrEqual(replacement.metadata.taskIdentifier, 0)
+        XCTAssertEqual(replacement.metadata.retryAttempt, 1)
+        try await manager.deleteAllTelemetry()
+    }
+
+    func testReplacementAssignmentCommitFailureReleasesOwnershipForForegroundFallback() async throws {
+        let environment = try TestEnvironment()
+        defer { environment.remove() }
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: UUID().uuidString))
+        let configuration = ServerConfigurationStore(defaults: defaults, tokenStore: TestTokenStore())
+        try await configuration.save(
+            baseURL: environment.server.baseURL.absoluteString,
+            token: environment.server.token
+        )
+        let envelope = TelemetryTestSupport.envelope()
+        try await environment.archive.append(envelope)
+        let binding = try await environment.control.bind(
+            snapshot: try await configuration.snapshot(),
+            installationID: envelope.installationID
+        )
+        let fence = try XCTUnwrap(binding.binding?.fence)
+        let commitFailure = AssignmentCommitFailure()
+        let queue = BackgroundUploadQueue(
+            rootURL: environment.queueURL,
+            commitCheckpoint: { try commitFailure.check($0) }
+        )
+        let prepared = try await queue.prepare([envelope], fence: fence)
+        var completedMetadata = prepared.metadata
+        completedMetadata.taskIdentifier = 78
+        try await queue.commit(completedMetadata)
+        commitFailure.failNextReplacementAssignment()
+        let manager = BackgroundTelemetryUploadManager(
+            archive: environment.archive,
+            configuration: configuration,
+            installationID: envelope.installationID,
+            control: environment.control,
+            queue: queue,
+            activateSession: false,
+            stagingEnabled: { true }
+        )
+        let sink = BackgroundRecordingTelemetrySink()
+        let ingestor = TelemetryIngestor(
+            archive: environment.archive,
+            sink: sink,
+            installationID: envelope.installationID,
+            backgroundUploader: manager
+        )
+
+        await manager.finalize(
+            taskID: completedMetadata.taskIdentifier,
+            completed: .init(response: nil, data: Data(), redirected: false),
+            error: URLError(.timedOut)
+        )
+
+        XCTAssertTrue(manager.leasedEnvelopeIDs().isEmpty)
+        let remainingBatches = try await queue.batches()
+        XCTAssertTrue(remainingBatches.isEmpty)
+        _ = try await ingestor.recoverPending()
+        let submissionCount = await sink.submissionCount
+        XCTAssertEqual(submissionCount, 1)
+        let acknowledgements = try await environment.archive.acknowledgedIDs(
+            runID: envelope.localRunID
+        )
+        XCTAssertEqual(acknowledgements, [envelope.id])
+        try await manager.deleteAllTelemetry()
+    }
+
+    func testMissingReplacementBodyReleasesOwnershipForForegroundFallback() async throws {
+        let environment = try TestEnvironment()
+        defer { environment.remove() }
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: UUID().uuidString))
+        let configuration = ServerConfigurationStore(defaults: defaults, tokenStore: TestTokenStore())
+        try await configuration.save(
+            baseURL: environment.server.baseURL.absoluteString,
+            token: environment.server.token
+        )
+        let envelope = TelemetryTestSupport.envelope()
+        try await environment.archive.append(envelope)
+        let binding = try await environment.control.bind(
+            snapshot: try await configuration.snapshot(),
+            installationID: envelope.installationID
+        )
+        let fence = try XCTUnwrap(binding.binding?.fence)
+        let prepared = try await environment.queue.prepare([envelope], fence: fence)
+        var completedMetadata = prepared.metadata
+        completedMetadata.taskIdentifier = 79
+        try await environment.queue.commit(completedMetadata)
+        let replacement = BackgroundCheckpoint()
+        let manager = BackgroundTelemetryUploadManager(
+            archive: environment.archive,
+            configuration: configuration,
+            installationID: envelope.installationID,
+            control: environment.control,
+            queue: environment.queue,
+            activateSession: false,
+            stagingEnabled: { true },
+            replacementCheckpoint: { await replacement.suspend() }
+        )
+        let sink = BackgroundRecordingTelemetrySink()
+        let ingestor = TelemetryIngestor(
+            archive: environment.archive,
+            sink: sink,
+            installationID: envelope.installationID,
+            backgroundUploader: manager
+        )
+
+        let completion = Task {
+            await manager.finalize(
+                taskID: completedMetadata.taskIdentifier,
+                completed: .init(response: nil, data: Data(), redirected: false),
+                error: URLError(.timedOut)
+            )
+        }
+        await replacement.waitUntilSuspended()
+        try FileManager.default.removeItem(at: prepared.bodyURL)
+        await replacement.resume()
+        await completion.value
+
+        XCTAssertTrue(manager.leasedEnvelopeIDs().isEmpty)
+        _ = try await ingestor.recoverPending()
+        let submissionCount = await sink.submissionCount
+        XCTAssertEqual(submissionCount, 1)
+        let acknowledgements = try await environment.archive.acknowledgedIDs(
+            runID: envelope.localRunID
+        )
+        XCTAssertEqual(acknowledgements, [envelope.id])
+        try await manager.deleteAllTelemetry()
+    }
+
+    func testActiveRetryRetiresPreparedSuccessorBeforePublishingSolePreparedOwner() async throws {
+        let environment = try TestEnvironment()
+        defer { environment.remove() }
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: UUID().uuidString))
+        let configuration = ServerConfigurationStore(defaults: defaults, tokenStore: TestTokenStore())
+        try await configuration.save(
+            baseURL: environment.server.baseURL.absoluteString,
+            token: environment.server.token
+        )
+        let active = TelemetryTestSupport.envelope()
+        let successor = TelemetryEnvelope(
+            id: UUID(),
+            installationID: active.installationID,
+            localRunID: active.localRunID,
+            phoneReceivedAt: active.phoneReceivedAt.addingTimeInterval(1),
+            garminDeviceIdentifier: active.garminDeviceIdentifier,
+            appVersion: active.appVersion,
+            sample: TelemetryTestSupport.sample(sequence: 2)
+        )
+        try await environment.archive.append(active)
+        try await environment.archive.append(successor)
+        let binding = try await environment.control.bind(
+            snapshot: try await configuration.snapshot(),
+            installationID: active.installationID
+        )
+        let fence = try XCTUnwrap(binding.binding?.fence)
+        let activeBatch = try await environment.queue.prepare([active], fence: fence)
+        var completedMetadata = activeBatch.metadata
+        completedMetadata.taskIdentifier = 80
+        try await environment.queue.commit(completedMetadata)
+        let successorBatch = try await environment.queue.prepare([successor], fence: fence)
+        let assignment = BackgroundCheckpoint()
+        let manager = BackgroundTelemetryUploadManager(
+            archive: environment.archive,
+            configuration: configuration,
+            installationID: active.installationID,
+            control: environment.control,
+            queue: environment.queue,
+            activateSession: false,
+            stagingEnabled: { true },
+            assignmentCheckpoint: { await assignment.suspend() }
+        )
+        manager.setPreparedLease(successorBatch.metadata)
+        let sink = BackgroundRecordingTelemetrySink()
+        let ingestor = TelemetryIngestor(
+            archive: environment.archive,
+            sink: sink,
+            installationID: active.installationID,
+            backgroundUploader: manager
+        )
+
+        let completion = Task {
+            await manager.finalize(
+                taskID: completedMetadata.taskIdentifier,
+                completed: .init(response: nil, data: Data(), redirected: false),
+                error: URLError(.timedOut)
+            )
+        }
+        await assignment.waitUntilSuspended()
+
+        let duringHandoff = try await environment.queue.batches()
+        XCTAssertEqual(duringHandoff.map(\.metadata.batchID), [activeBatch.metadata.batchID])
+        XCTAssertEqual(manager.leasedEnvelopeIDs(), [active.id])
+        _ = try await ingestor.recoverPending()
+        let foregroundIDs = await sink.submittedIDs
+        XCTAssertEqual(foregroundIDs, [successor.id])
+        let successorAcknowledgements = try await environment.archive.acknowledgedIDs(
+            runID: successor.localRunID
+        )
+        XCTAssertTrue(successorAcknowledgements.contains(successor.id))
+
+        await assignment.resume()
+        await completion.value
+
+        let finalBatches = try await environment.queue.batches()
+        XCTAssertEqual(finalBatches.map(\.metadata.batchID), [activeBatch.metadata.batchID])
+        XCTAssertEqual(manager.leasedEnvelopeIDs(), [active.id])
+        try await manager.deleteAllTelemetry()
+    }
+
+    func testContendedActiveRetryIsDiscardedWhilePreparedSuccessorRemainsSoleOwner() async throws {
+        let environment = try TestEnvironment()
+        defer { environment.remove() }
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: UUID().uuidString))
+        let configuration = ServerConfigurationStore(defaults: defaults, tokenStore: TestTokenStore())
+        try await configuration.save(
+            baseURL: environment.server.baseURL.absoluteString,
+            token: environment.server.token
+        )
+        let active = TelemetryTestSupport.envelope()
+        let successor = TelemetryEnvelope(
+            id: UUID(),
+            installationID: active.installationID,
+            localRunID: active.localRunID,
+            phoneReceivedAt: active.phoneReceivedAt.addingTimeInterval(1),
+            garminDeviceIdentifier: active.garminDeviceIdentifier,
+            appVersion: active.appVersion,
+            sample: TelemetryTestSupport.sample(sequence: 2)
+        )
+        try await environment.archive.append(active)
+        try await environment.archive.append(successor)
+        let binding = try await environment.control.bind(
+            snapshot: try await configuration.snapshot(),
+            installationID: active.installationID
+        )
+        let fence = try XCTUnwrap(binding.binding?.fence)
+        let successorBatch = try await environment.queue.prepare([successor], fence: fence)
+        let activeBatch = try await environment.queue.prepare([active], fence: fence)
+        var completedMetadata = activeBatch.metadata
+        completedMetadata.taskIdentifier = 81
+        try await environment.queue.commit(completedMetadata)
+        let successorAssignment = BackgroundCheckpoint()
+        let manager = BackgroundTelemetryUploadManager(
+            archive: environment.archive,
+            configuration: configuration,
+            installationID: active.installationID,
+            control: environment.control,
+            queue: environment.queue,
+            activateSession: false,
+            stagingEnabled: { true },
+            assignmentCheckpoint: { await successorAssignment.suspend() }
+        )
+        manager.setPreparedLease(successorBatch.metadata)
+        let sink = BackgroundRecordingTelemetrySink()
+        let ingestor = TelemetryIngestor(
+            archive: environment.archive,
+            sink: sink,
+            installationID: active.installationID,
+            backgroundUploader: manager
+        )
+
+        let assigningSuccessor = Task { await manager.resumePreparedIfEnabled() }
+        await successorAssignment.waitUntilSuspended()
+        await manager.finalize(
+            taskID: completedMetadata.taskIdentifier,
+            completed: .init(response: nil, data: Data(), redirected: false),
+            error: URLError(.timedOut)
+        )
+
+        let duringContention = try await environment.queue.batches()
+        XCTAssertEqual(duringContention.map(\.metadata.batchID), [successorBatch.metadata.batchID])
+        XCTAssertEqual(manager.leasedEnvelopeIDs(), [successor.id])
+        _ = try await ingestor.recoverPending()
+        let foregroundIDs = await sink.submittedIDs
+        XCTAssertEqual(foregroundIDs, [active.id])
+
+        await successorAssignment.resume()
+        await assigningSuccessor.value
+
+        let finalBatches = try await environment.queue.batches()
+        XCTAssertEqual(finalBatches.map(\.metadata.batchID), [successorBatch.metadata.batchID])
+        XCTAssertEqual(manager.leasedEnvelopeIDs(), [successor.id])
+        try await manager.deleteAllTelemetry()
     }
 
     func testOrphanAssignedBatchIsReclaimedAsPreparedWork() async throws {
@@ -743,6 +1398,49 @@ private final class CompletionCounter: @unchecked Sendable {
 
     var value: Int { lock.withLock { count } }
     func increment() { lock.withLock { count += 1 } }
+}
+
+private struct LegacyBackgroundUploadMetadata: Encodable {
+    let batchID: UUID
+    let envelopeIDs: [UUID]
+    let activityIDs: [UUID]
+    let configurationGeneration: UInt64
+    let destinationFingerprint: String
+    let deleteEpoch: UInt64
+    let taskIdentifier: Int
+    let createdAt: Date
+}
+
+private actor BackgroundRecordingTelemetrySink: TelemetrySink {
+    private(set) var submissionCount = 0
+    private(set) var submittedIDs: [UUID] = []
+
+    func submit(_ envelopes: [TelemetryEnvelope]) -> [UUID] {
+        submissionCount += 1
+        let identifiers = envelopes.map(\.id)
+        submittedIDs.append(contentsOf: identifiers)
+        return identifiers
+    }
+}
+
+private final class AssignmentCommitFailure: @unchecked Sendable {
+    private let lock = NSLock()
+    private var shouldFail = false
+
+    func failNextReplacementAssignment() {
+        lock.withLock { shouldFail = true }
+    }
+
+    func check(_ metadata: BackgroundUploadMetadata) throws {
+        let fail = lock.withLock { () -> Bool in
+            guard shouldFail, metadata.taskIdentifier >= 0, metadata.retryAttempt > 0 else {
+                return false
+            }
+            shouldFail = false
+            return true
+        }
+        if fail { throw CocoaError(.fileWriteUnknown) }
+    }
 }
 
 private actor BackgroundCheckpoint {

@@ -112,6 +112,12 @@ actor TelemetryIngestor {
     private var retryTriggerPending = false
     private var configurationGeneration = 0
     private var deletionInProgress = false
+    private var uploadStopBeforeDeletion: (
+        automatic: Bool,
+        uploadState: TelemetryUploadState,
+        errorCategory: String?
+    )?
+    private var configurationChangeDuringDeletion: Bool?
     private var activeIngestionCount = 0
     private var ingestionWaiters: [CheckedContinuation<Void, Never>] = []
     private var status = ServerUploadStatus.notConfigured
@@ -465,7 +471,14 @@ actor TelemetryIngestor {
     }
 
     func configurationChanged(configured: Bool) async -> ServerUploadStatus {
-        guard !deletionInProgress else { return statusSnapshot() }
+        guard !deletionInProgress else {
+            configurationChangeDuringDeletion = configured
+            return statusSnapshot()
+        }
+        return await applyConfigurationChange(configured: configured)
+    }
+
+    private func applyConfigurationChange(configured: Bool) async -> ServerUploadStatus {
         configurationGeneration += 1
         (sink as? any CancellableTelemetrySink)?.cancelAll()
         do {
@@ -504,6 +517,11 @@ actor TelemetryIngestor {
     func deleteAllTelemetry() async throws {
         if !deletionInProgress {
             deletionInProgress = true
+            uploadStopBeforeDeletion = (
+                automaticUploadsStopped,
+                status.uploadState,
+                status.lastSafeErrorCategory
+            )
             configurationGeneration += 1
             automaticUploadsStopped = true
             retryAttempt = 0
@@ -533,7 +551,30 @@ actor TelemetryIngestor {
         sessionRecovered = true
         needsReconciliation = false
         status = .notConfigured
+        if let prior = uploadStopBeforeDeletion, prior.automatic {
+            automaticUploadsStopped = true
+            status.uploadState = prior.uploadState
+            status.lastSafeErrorCategory = prior.errorCategory
+        } else if let backgroundUploader {
+            do {
+                let configured = try await backgroundUploader.requestBinding() != nil
+                automaticUploadsStopped = !configured
+                status.uploadState = configured ? .idle : .notConfigured
+                status.lastSafeErrorCategory = configured ? nil : "configuration"
+            } catch {
+                blockUploads(reason: "Upload configuration unavailable", category: "configuration_storage")
+            }
+        } else {
+            automaticUploadsStopped = false
+            status.uploadState = .notConfigured
+        }
+        uploadStopBeforeDeletion = nil
         deletionInProgress = false
+        if let configured = configurationChangeDuringDeletion {
+            configurationChangeDuringDeletion = nil
+            _ = await applyConfigurationChange(configured: configured)
+        }
+        await publishStatus()
     }
 
     func backgroundUploadCompleted(
@@ -630,6 +671,7 @@ actor TelemetryIngestor {
             envelopeIDs: Set(pending.map(\.id)),
             generation: configurationGeneration
         ) else { return [] }
+        if allowBlockedRetry { automaticUploadsStopped = false }
         await backgroundUploader?.resumePreparedIfEnabled()
         guard !deletionInProgress else {
             releaseSubmissionLease()
@@ -675,7 +717,6 @@ actor TelemetryIngestor {
                 )
                 allAcknowledged.append(contentsOf: acknowledgedSet)
                 status.uploadState = acknowledgedSet.count == batch.count ? .current : .backingOff
-                if allowBlockedRetry { automaticUploadsStopped = false }
                 clearRetry(for: acknowledgedSet)
                 if acknowledgedSet.isEmpty || acknowledgedSet.count < batch.count {
                     let failedIDs = Set(batch.map(\.id)).subtracting(acknowledgedSet)

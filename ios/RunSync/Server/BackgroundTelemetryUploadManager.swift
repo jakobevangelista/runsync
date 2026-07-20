@@ -8,7 +8,60 @@ struct BackgroundUploadMetadata: Codable, Equatable, Sendable {
     let destinationFingerprint: String
     let deleteEpoch: UInt64
     var taskIdentifier: Int
+    var retryAttempt: Int
+    var retryNotBefore: Date?
     let createdAt: Date
+
+    init(
+        batchID: UUID,
+        envelopeIDs: [UUID],
+        activityIDs: [UUID],
+        configurationGeneration: UInt64,
+        destinationFingerprint: String,
+        deleteEpoch: UInt64,
+        taskIdentifier: Int,
+        retryAttempt: Int = 0,
+        retryNotBefore: Date? = nil,
+        createdAt: Date
+    ) {
+        self.batchID = batchID
+        self.envelopeIDs = envelopeIDs
+        self.activityIDs = activityIDs
+        self.configurationGeneration = configurationGeneration
+        self.destinationFingerprint = destinationFingerprint
+        self.deleteEpoch = deleteEpoch
+        self.taskIdentifier = taskIdentifier
+        self.retryAttempt = retryAttempt
+        self.retryNotBefore = retryNotBefore
+        self.createdAt = createdAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case batchID
+        case envelopeIDs
+        case activityIDs
+        case configurationGeneration
+        case destinationFingerprint
+        case deleteEpoch
+        case taskIdentifier
+        case retryAttempt
+        case retryNotBefore
+        case createdAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        batchID = try container.decode(UUID.self, forKey: .batchID)
+        envelopeIDs = try container.decode([UUID].self, forKey: .envelopeIDs)
+        activityIDs = try container.decode([UUID].self, forKey: .activityIDs)
+        configurationGeneration = try container.decode(UInt64.self, forKey: .configurationGeneration)
+        destinationFingerprint = try container.decode(String.self, forKey: .destinationFingerprint)
+        deleteEpoch = try container.decode(UInt64.self, forKey: .deleteEpoch)
+        taskIdentifier = try container.decode(Int.self, forKey: .taskIdentifier)
+        retryAttempt = try container.decodeIfPresent(Int.self, forKey: .retryAttempt) ?? 0
+        retryNotBefore = try container.decodeIfPresent(Date.self, forKey: .retryNotBefore)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+    }
 
     var fence: TelemetryUploadFence {
         TelemetryUploadFence(
@@ -16,6 +69,16 @@ struct BackgroundUploadMetadata: Codable, Equatable, Sendable {
             destinationFingerprint: destinationFingerprint,
             deleteEpoch: deleteEpoch
         )
+    }
+}
+
+enum BackgroundUploadRetryPolicy {
+    static let delays: [TimeInterval] = [1, 2, 4, 8, 16, 32, 60, 120, 300]
+
+    static func delay(attempt: Int, retryAfter: TimeInterval?) -> TimeInterval {
+        let exponential = delays[min(max(attempt, 1), delays.count) - 1]
+        guard let retryAfter, retryAfter.isFinite, retryAfter >= 0 else { return exponential }
+        return max(exponential, retryAfter)
     }
 }
 
@@ -27,9 +90,15 @@ actor BackgroundUploadQueue {
 
     private let rootURL: URL
     private let fileManager: FileManager
+    private let commitCheckpoint: @Sendable (BackgroundUploadMetadata) throws -> Void
 
-    init(rootURL: URL? = nil, fileManager: FileManager = .default) {
+    init(
+        rootURL: URL? = nil,
+        fileManager: FileManager = .default,
+        commitCheckpoint: @escaping @Sendable (BackgroundUploadMetadata) throws -> Void = { _ in }
+    ) {
         self.fileManager = fileManager
+        self.commitCheckpoint = commitCheckpoint
         self.rootURL = rootURL ?? fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("RunSync", isDirectory: true)
             .appendingPathComponent("UploadQueue", isDirectory: true)
@@ -51,6 +120,8 @@ actor BackgroundUploadQueue {
             destinationFingerprint: fence.destinationFingerprint,
             deleteEpoch: fence.deleteEpoch,
             taskIdentifier: -1,
+            retryAttempt: 0,
+            retryNotBefore: nil,
             createdAt: Date()
         )
         do {
@@ -63,6 +134,7 @@ actor BackgroundUploadQueue {
     }
 
     func commit(_ metadata: BackgroundUploadMetadata) throws {
+        try commitCheckpoint(metadata)
         try createDirectory()
         let data = try JSONEncoder().encode(metadata)
         try data.write(
@@ -103,6 +175,15 @@ actor BackgroundUploadQueue {
         }
     }
 
+    func remove(batchID: UUID, expectedTaskIdentifier: Int) throws -> Bool {
+        guard let prepared = try batches().first(where: { $0.metadata.batchID == batchID }),
+              prepared.metadata.taskIdentifier == expectedTaskIdentifier else {
+            return false
+        }
+        try remove(batchID: batchID)
+        return true
+    }
+
     func removeAll() throws {
         if fileManager.fileExists(atPath: rootURL.path) { try fileManager.removeItem(at: rootURL) }
     }
@@ -112,6 +193,51 @@ actor BackgroundUploadQueue {
         metadata.taskIdentifier = -1
         try commit(metadata)
         return PreparedBatch(metadata: metadata, bodyURL: prepared.bodyURL)
+    }
+
+    func prepareRetry(
+        batchID: UUID,
+        expectedTaskIdentifier: Int,
+        retryAfter: TimeInterval?,
+        now: Date
+    ) throws -> PreparedBatch? {
+        guard let prepared = try batches().first(where: { $0.metadata.batchID == batchID }),
+              fileManager.fileExists(atPath: prepared.bodyURL.path),
+              prepared.metadata.taskIdentifier == expectedTaskIdentifier else {
+            return nil
+        }
+        var metadata = prepared.metadata
+        metadata.taskIdentifier = -1
+        metadata.retryAttempt = min(metadata.retryAttempt + 1, BackgroundUploadRetryPolicy.delays.count)
+        metadata.retryNotBefore = now.addingTimeInterval(BackgroundUploadRetryPolicy.delay(
+            attempt: metadata.retryAttempt,
+            retryAfter: retryAfter
+        ))
+        try commit(metadata)
+        return PreparedBatch(metadata: metadata, bodyURL: prepared.bodyURL)
+    }
+
+    func durablePreparedBatch(batchID: UUID, fence: TelemetryUploadFence) throws -> PreparedBatch? {
+        guard let prepared = try batches().first(where: {
+            $0.metadata.batchID == batchID
+                && $0.metadata.taskIdentifier < 0
+                && $0.metadata.fence == fence
+        }), fileManager.fileExists(atPath: prepared.bodyURL.path) else {
+            return nil
+        }
+        return prepared
+    }
+
+    func removePrepared(batchID: UUID, fence: TelemetryUploadFence) throws -> Bool {
+        guard let prepared = try batches().first(where: {
+            $0.metadata.batchID == batchID
+                && $0.metadata.taskIdentifier < 0
+                && $0.metadata.fence == fence
+        }) else {
+            return false
+        }
+        try remove(batchID: prepared.metadata.batchID)
+        return true
     }
 
     func exists() -> Bool { fileManager.fileExists(atPath: rootURL.path) }
@@ -209,6 +335,27 @@ private actor BackgroundStartupGate {
 
 
     func isReady() -> Bool { ready }
+}
+
+private actor BackgroundAssignmentGate {
+    private var isLocked = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func acquire() async {
+        guard isLocked else {
+            isLocked = true
+            return
+        }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func release() {
+        guard !waiters.isEmpty else {
+            isLocked = false
+            return
+        }
+        waiters.removeFirst().resume()
+    }
 }
 
 private final class BackgroundManagerOperationGate: @unchecked Sendable {
@@ -368,15 +515,18 @@ actor BackgroundUploadFinalizer {
     private let archive: TelemetryArchive
     private let control: TelemetryUploadControlStore
     private let queue: BackgroundUploadQueue
+    private let now: @Sendable () -> Date
 
     init(
         archive: TelemetryArchive,
         control: TelemetryUploadControlStore,
-        queue: BackgroundUploadQueue
+        queue: BackgroundUploadQueue,
+        now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.archive = archive
         self.control = control
         self.queue = queue
+        self.now = now
     }
 
     func finalize(
@@ -396,19 +546,19 @@ actor BackgroundUploadFinalizer {
             result = .failure(.permanent(reason: "Unexpected server redirect"))
         } else if let response = completed.response {
             if (200...299).contains(response.statusCode) {
-                guard response.value(forHTTPHeaderField: "Content-Type")?
-                    .lowercased().contains("application/json") == true else {
-                    try? await queue.remove(batchID: metadata.batchID)
-                    return .failed(.transient(retryAfter: nil))
-                }
-                do {
-                    result = .success(try TelemetryBatchCodec.decodeAcknowledgements(
-                        completed.data,
-                        requested: Set(metadata.envelopeIDs)
-                    ))
-                } catch let sinkError as TelemetrySinkError {
-                    result = .failure(sinkError)
-                } catch {
+                if response.value(forHTTPHeaderField: "Content-Type")?
+                    .lowercased().contains("application/json") == true {
+                    do {
+                        result = .success(try TelemetryBatchCodec.decodeAcknowledgements(
+                            completed.data,
+                            requested: Set(metadata.envelopeIDs)
+                        ))
+                    } catch let sinkError as TelemetrySinkError {
+                        result = .failure(sinkError)
+                    } catch {
+                        result = .failure(.transient(retryAfter: nil))
+                    }
+                } else {
                     result = .failure(.transient(retryAfter: nil))
                 }
             } else {
@@ -438,23 +588,76 @@ actor BackgroundUploadFinalizer {
                     }
                 }
             } catch {
-                try? await queue.remove(batchID: metadata.batchID)
-                return .failed(.transient(retryAfter: nil))
+                let outcome = BackgroundUploadOutcome.failed(.transient(retryAfter: nil))
+                return await prepareRetry(metadata: metadata, outcome: outcome) ? outcome : .stale
             }
-            try? await queue.remove(batchID: metadata.batchID)
-            return acknowledged.count == metadata.envelopeIDs.count
-                ? .acknowledged(acknowledged)
-                : .partial(acknowledged)
+            if acknowledged.count == metadata.envelopeIDs.count {
+                guard (try? await queue.remove(
+                    batchID: metadata.batchID,
+                    expectedTaskIdentifier: metadata.taskIdentifier
+                )) == true else { return .stale }
+                return .acknowledged(acknowledged)
+            }
+            let outcome = BackgroundUploadOutcome.partial(acknowledged)
+            return await prepareRetry(metadata: metadata, outcome: outcome) ? outcome : .stale
         case .failure(let error):
-            try? await queue.remove(batchID: metadata.batchID)
+            if Self.shouldRetainForRetry(error) {
+                let outcome = BackgroundUploadOutcome.failed(error)
+                return await prepareRetry(metadata: metadata, outcome: outcome) ? outcome : .stale
+            } else {
+                guard (try? await queue.remove(
+                    batchID: metadata.batchID,
+                    expectedTaskIdentifier: metadata.taskIdentifier
+                )) == true else { return .stale }
+            }
             return .failed(error)
+        }
+    }
+
+    private func prepareRetry(
+        metadata: BackgroundUploadMetadata,
+        outcome: BackgroundUploadOutcome
+    ) async -> Bool {
+        let retryAfter: TimeInterval?
+        if case .failed(.transient(let serverDelay)) = outcome {
+            retryAfter = serverDelay
+        } else {
+            retryAfter = nil
+        }
+        do {
+            return try await queue.prepareRetry(
+                batchID: metadata.batchID,
+                expectedTaskIdentifier: metadata.taskIdentifier,
+                retryAfter: retryAfter,
+                now: now()
+            ) != nil
+        } catch {
+            return false
+        }
+    }
+
+    private nonisolated static func shouldRetainForRetry(_ error: TelemetrySinkError) -> Bool {
+        switch error {
+        case .transient:
+            true
+        case .rejected(let rejection):
+            rejection.retryable == true
+        case .notConfigured, .authentication, .permanent, .rejected:
+            false
         }
     }
 }
 
 final class BackgroundTelemetryUploadManager: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    private enum ReplacementOwnership {
+        case activeTask
+        case prepared
+        case none
+    }
+
     static let sessionIdentifier = "com.jakobevangelista.runsync.telemetry-background"
     static let stagingFeatureFlagKey = "RunSyncBackgroundStagingEnabled"
+    static let backgroundRetryDelays = BackgroundUploadRetryPolicy.delays
 
     private let archive: TelemetryArchive
     private let configuration: ServerConfigurationStore
@@ -466,9 +669,11 @@ final class BackgroundTelemetryUploadManager: NSObject, URLSessionDataDelegate, 
     private let responses = BackgroundTransferResponses()
     private let completionGate = BackgroundEventCompletionGate()
     private let startupGate = BackgroundStartupGate()
+    private let assignmentGate = BackgroundAssignmentGate()
     private let operationGate = BackgroundManagerOperationGate()
     private let lock = NSLock()
     private var leasedByTask: [Int: BackgroundUploadMetadata] = [:]
+    private var finalizingByTask: [Int: BackgroundUploadMetadata] = [:]
     private var preparedLease: BackgroundUploadMetadata?
     private var submissionInProgress = false
     private var callbackOwnedTaskIDs: Set<Int> = []
@@ -478,6 +683,9 @@ final class BackgroundTelemetryUploadManager: NSObject, URLSessionDataDelegate, 
     private var startupRetryInProgress = false
     private var completionHandler: (@Sendable (BackgroundUploadMetadata, BackgroundUploadOutcome) async -> Void)?
     private let stageCheckpoint: @Sendable () async -> Void
+    private let assignmentCheckpoint: @Sendable () async -> Void
+    private let finalizationCheckpoint: @Sendable () async -> Void
+    private let replacementCheckpoint: @Sendable () async -> Void
     private let bindingCheckpoint: @Sendable (UInt64) async -> Void
     private let bindingDidChangeCheckpoint: @Sendable () async -> Void
     private let startupRetrySleep: @Sendable () async -> Void
@@ -505,6 +713,9 @@ final class BackgroundTelemetryUploadManager: NSObject, URLSessionDataDelegate, 
             UserDefaults.standard.bool(forKey: BackgroundTelemetryUploadManager.stagingFeatureFlagKey)
         },
         stageCheckpoint: @escaping @Sendable () async -> Void = {},
+        assignmentCheckpoint: @escaping @Sendable () async -> Void = {},
+        finalizationCheckpoint: @escaping @Sendable () async -> Void = {},
+        replacementCheckpoint: @escaping @Sendable () async -> Void = {},
         bindingCheckpoint: @escaping @Sendable (UInt64) async -> Void = { _ in },
         bindingDidChangeCheckpoint: @escaping @Sendable () async -> Void = {},
         startupRetrySleep: @escaping @Sendable () async -> Void = {
@@ -519,6 +730,9 @@ final class BackgroundTelemetryUploadManager: NSObject, URLSessionDataDelegate, 
         self.finalizer = BackgroundUploadFinalizer(archive: archive, control: control, queue: queue)
         self.stagingEnabled = stagingEnabled
         self.stageCheckpoint = stageCheckpoint
+        self.assignmentCheckpoint = assignmentCheckpoint
+        self.finalizationCheckpoint = finalizationCheckpoint
+        self.replacementCheckpoint = replacementCheckpoint
         self.bindingCheckpoint = bindingCheckpoint
         self.bindingDidChangeCheckpoint = bindingDidChangeCheckpoint
         self.startupRetrySleep = startupRetrySleep
@@ -635,7 +849,11 @@ final class BackgroundTelemetryUploadManager: NSObject, URLSessionDataDelegate, 
 
     func leasedEnvelopeIDs() -> Set<UUID> {
         lock.withLock {
-            Set(leasedByTask.values.flatMap(\.envelopeIDs) + (preparedLease?.envelopeIDs ?? []))
+            Set(
+                leasedByTask.values.flatMap(\.envelopeIDs)
+                    + finalizingByTask.values.flatMap(\.envelopeIDs)
+                    + (preparedLease?.envelopeIDs ?? [])
+            )
         }
     }
 
@@ -727,6 +945,10 @@ final class BackgroundTelemetryUploadManager: NSObject, URLSessionDataDelegate, 
         return request
     }
 
+    static func backgroundRetryDelay(attempt: Int, retryAfter: TimeInterval?) -> TimeInterval {
+        BackgroundUploadRetryPolicy.delay(attempt: attempt, retryAfter: retryAfter)
+    }
+
     func urlSession(
         _ session: URLSession,
         task: URLSessionTask,
@@ -754,7 +976,7 @@ final class BackgroundTelemetryUploadManager: NSObject, URLSessionDataDelegate, 
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         let completed = responses.complete(taskID: task.taskIdentifier)
-        _ = lock.withLock { callbackOwnedTaskIDs.insert(task.taskIdentifier) }
+        beginCallbackOwnership(taskID: task.taskIdentifier)
         completionGate.beginFinalization()
         Task { [self] in
             await self.startupGate.waitUntilReady()
@@ -795,23 +1017,29 @@ final class BackgroundTelemetryUploadManager: NSObject, URLSessionDataDelegate, 
         let request = Self.makeRequest(server: binding.server)
         let task = session.uploadTask(with: request, fromFile: prepared.bodyURL)
         task.taskDescription = prepared.metadata.batchID.uuidString
+        task.earliestBeginDate = prepared.metadata.retryNotBefore
         var metadata = prepared.metadata
         metadata.taskIdentifier = task.taskIdentifier
+        await assignmentGate.acquire()
         do {
             try await queue.commit(metadata)
+            await assignmentCheckpoint()
         } catch {
+            await assignmentGate.release()
             task.cancel()
             try? await queue.remove(batchID: metadata.batchID)
             clearPreparedLease(batchID: metadata.batchID)
             throw error
         }
         guard operationGate.isCurrent(operation) else {
+            await assignmentGate.release()
             task.cancel()
             try? await queue.remove(batchID: metadata.batchID)
             clearPreparedLease(batchID: metadata.batchID)
             return
         }
         setLease(metadata, taskID: task.taskIdentifier)
+        await assignmentGate.release()
         task.resume()
     }
 
@@ -829,6 +1057,10 @@ final class BackgroundTelemetryUploadManager: NSObject, URLSessionDataDelegate, 
             callbackOwnedTaskIDs: callbackOwned,
             preserveAssignedBatches: true
         )
+        for batch in batches where callbackOwned.contains(batch.metadata.taskIdentifier)
+            && batch.metadata.fence == fence {
+            setFinalizing(batch.metadata, taskID: batch.metadata.taskIdentifier)
+        }
         var prepared = plan.prepared
         if let candidate = prepared, candidate.metadata.taskIdentifier >= 0 {
             prepared = try await queue.resetForRetry(candidate)
@@ -847,29 +1079,111 @@ final class BackgroundTelemetryUploadManager: NSObject, URLSessionDataDelegate, 
         }
     }
 
-    private func finalize(
+    func finalize(
         taskID: Int,
         completed: BackgroundTransferResponses.Completed,
         error: Error?
     ) async {
         defer { _ = lock.withLock { callbackOwnedTaskIDs.remove(taskID) } }
         let metadata: BackgroundUploadMetadata?
-        if let leased = removeLease(taskID: taskID) {
-            metadata = leased
+        if let owned = finalizingMetadata(taskID: taskID) {
+            metadata = owned
         } else {
-            metadata = try? await queue.batches().first {
+            let restored = try? await queue.batches().first {
                 $0.metadata.taskIdentifier == taskID
             }?.metadata
+            if let restored, await control.isCurrent(restored.fence) {
+                setFinalizing(restored, taskID: taskID)
+            }
+            metadata = restored
         }
         guard let metadata else { return }
+        await finalizationCheckpoint()
         let outcome = await finalizer.finalize(metadata: metadata, completed: completed, error: error)
+        if Self.shouldScheduleReplacement(for: outcome) {
+            await replacementCheckpoint()
+            let replacement = await scheduleReplacementTask(
+                batchID: metadata.batchID,
+                fence: metadata.fence
+            )
+            if case .none = replacement {
+                clearPreparedLease(batchID: metadata.batchID)
+                clearFinalizing(taskID: taskID)
+            }
+        }
         let handler = lock.withLock { completionHandler }
         await handler?(metadata, outcome)
-        if let prepared = try? await queue.batches().first,
-           await control.isCurrent(prepared.metadata.fence) {
-            setPreparedLease(prepared.metadata)
-        } else {
-            clearPreparedLease(batchID: metadata.batchID)
+        if !Self.shouldScheduleReplacement(for: outcome) {
+            clearFinalizing(taskID: taskID)
+        }
+    }
+
+    private func scheduleReplacementTask(
+        batchID: UUID,
+        fence: TelemetryUploadFence
+    ) async -> ReplacementOwnership {
+        guard let operation = operationGate.begin() else { return .none }
+        defer { operationGate.end() }
+        guard beginSubmissionIfIdle() else {
+            let ownership = replacementOwnership(batchID: batchID)
+            guard case .none = ownership else { return ownership }
+            await discardRetryStaging(batchID: batchID, fence: fence)
+            return replacementOwnership(batchID: batchID)
+        }
+        defer { endSubmission() }
+        guard operationGate.isCurrent(operation), await control.isCurrent(fence),
+              let prepared = try? await queue.durablePreparedBatch(batchID: batchID, fence: fence),
+              prepared.metadata.retryNotBefore != nil else {
+            await discardRetryStaging(batchID: batchID, fence: fence)
+            return replacementOwnership(batchID: batchID)
+        }
+        guard await retirePreparedSuccessor(replacingBatchID: batchID) else {
+            await discardRetryStaging(batchID: batchID, fence: fence)
+            return replacementOwnership(batchID: batchID)
+        }
+        guard operationGate.isCurrent(operation), await control.isCurrent(fence) else {
+            await discardRetryStaging(batchID: batchID, fence: fence)
+            return replacementOwnership(batchID: batchID)
+        }
+        publishPreparedReplacement(prepared.metadata)
+        guard let binding = try? await requestBinding(operation: operation),
+              binding.fence == fence, operationGate.isCurrent(operation) else {
+            return replacementOwnership(batchID: batchID)
+        }
+        try? await submit(prepared, binding: binding, operation: operation)
+        return replacementOwnership(batchID: batchID)
+    }
+
+    private func retirePreparedSuccessor(replacingBatchID: UUID) async -> Bool {
+        guard let existing = lock.withLock({ preparedLease }),
+              existing.batchID != replacingBatchID else {
+            return true
+        }
+        do {
+            _ = try await queue.remove(
+                batchID: existing.batchID,
+                expectedTaskIdentifier: existing.taskIdentifier
+            )
+            clearPreparedLease(batchID: existing.batchID)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    private func discardRetryStaging(batchID: UUID, fence: TelemetryUploadFence) async {
+        _ = try? await queue.removePrepared(batchID: batchID, fence: fence)
+        clearPreparedLease(batchID: batchID)
+    }
+
+    private static func shouldScheduleReplacement(for outcome: BackgroundUploadOutcome) -> Bool {
+        switch outcome {
+        case .partial, .failed(.transient):
+            true
+        case .failed(.rejected(let rejection)):
+            rejection.retryable == true
+        case .stale, .acknowledged, .failed:
+            false
         }
     }
 
@@ -894,17 +1208,41 @@ final class BackgroundTelemetryUploadManager: NSObject, URLSessionDataDelegate, 
     private func setLease(_ metadata: BackgroundUploadMetadata, taskID: Int) {
         lock.withLock {
             leasedByTask[taskID] = metadata
+            finalizingByTask = finalizingByTask.filter { $0.value.batchID != metadata.batchID }
             if preparedLease?.batchID == metadata.batchID { preparedLease = nil }
         }
     }
 
-    private func removeLease(taskID: Int) -> BackgroundUploadMetadata? {
-        lock.withLock { leasedByTask.removeValue(forKey: taskID) }
+    private func beginCallbackOwnership(taskID: Int) {
+        lock.withLock {
+            callbackOwnedTaskIDs.insert(taskID)
+            if let metadata = leasedByTask.removeValue(forKey: taskID) {
+                finalizingByTask[taskID] = metadata
+            }
+        }
+    }
+
+    private func finalizingMetadata(taskID: Int) -> BackgroundUploadMetadata? {
+        lock.withLock {
+            if let metadata = finalizingByTask[taskID] { return metadata }
+            guard let metadata = leasedByTask.removeValue(forKey: taskID) else { return nil }
+            finalizingByTask[taskID] = metadata
+            return metadata
+        }
+    }
+
+    private func setFinalizing(_ metadata: BackgroundUploadMetadata, taskID: Int) {
+        lock.withLock { finalizingByTask[taskID] = metadata }
+    }
+
+    private func clearFinalizing(taskID: Int) {
+        lock.withLock { finalizingByTask.removeValue(forKey: taskID) }
     }
 
     private func clearTransferLeases() {
         lock.withLock {
             leasedByTask.removeAll()
+            finalizingByTask.removeAll()
             preparedLease = nil
         }
     }
@@ -912,6 +1250,7 @@ final class BackgroundTelemetryUploadManager: NSObject, URLSessionDataDelegate, 
     private func clearAllLeasesAndSubmissionState() {
         lock.withLock {
             leasedByTask.removeAll()
+            finalizingByTask.removeAll()
             preparedLease = nil
             submissionInProgress = false
         }
@@ -929,8 +1268,23 @@ final class BackgroundTelemetryUploadManager: NSObject, URLSessionDataDelegate, 
         lock.withLock { submissionInProgress = false }
     }
 
-    private func setPreparedLease(_ metadata: BackgroundUploadMetadata) {
+    func setPreparedLease(_ metadata: BackgroundUploadMetadata) {
         lock.withLock { preparedLease = metadata }
+    }
+
+    private func publishPreparedReplacement(_ metadata: BackgroundUploadMetadata) {
+        lock.withLock {
+            preparedLease = metadata
+            finalizingByTask = finalizingByTask.filter { $0.value.batchID != metadata.batchID }
+        }
+    }
+
+    private func replacementOwnership(batchID: UUID) -> ReplacementOwnership {
+        lock.withLock {
+            if leasedByTask.values.contains(where: { $0.batchID == batchID }) { return .activeTask }
+            if preparedLease?.batchID == batchID { return .prepared }
+            return .none
+        }
     }
 
     private func clearPreparedLease(batchID: UUID) {
@@ -963,17 +1317,28 @@ final class BackgroundTelemetryUploadManager: NSObject, URLSessionDataDelegate, 
         }
     }
 
-    private func removeUnownedSubmittedBatches() async {
+    func removeUnownedSubmittedBatches() async {
+        guard let operation = operationGate.begin() else { return }
+        defer { operationGate.end() }
+        await assignmentGate.acquire()
+        guard operationGate.isCurrent(operation) else {
+            await assignmentGate.release()
+            return
+        }
         let (leasedTaskIDs, callbackOwned) = lock.withLock {
             (Set(leasedByTask.keys), callbackOwnedTaskIDs)
         }
-        guard let batches = try? await queue.batches() else { return }
+        guard let batches = try? await queue.batches() else {
+            await assignmentGate.release()
+            return
+        }
         for batch in batches where batch.metadata.taskIdentifier >= 0
             && !leasedTaskIDs.contains(batch.metadata.taskIdentifier)
             && !callbackOwned.contains(batch.metadata.taskIdentifier) {
             try? await queue.remove(batchID: batch.metadata.batchID)
             clearPreparedLease(batchID: batch.metadata.batchID)
         }
+        await assignmentGate.release()
     }
 
     static func startupAttemptCanClear(

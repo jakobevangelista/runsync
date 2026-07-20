@@ -1115,6 +1115,191 @@ final class TelemetryIngestorTests: XCTestCase {
         XCTAssertEqual(forcedStatus.pendingCount, 1)
     }
 
+    func testDeleteRestoresConfiguredAutomaticUploadsForNewTelemetry() async throws {
+        let root = try TelemetryTestSupport.temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let storage = root.appendingPathComponent("RunSync", isDirectory: true)
+        let gate = TelemetryUploadFenceGate()
+        let control = TelemetryUploadControlStore(rootURL: storage, gate: gate)
+        let archive = TelemetryArchive(
+            rootURL: storage.appendingPathComponent("Runs", isDirectory: true),
+            storageRootURL: storage,
+            uploadFenceGate: gate
+        )
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: UUID().uuidString))
+        let configuration = ServerConfigurationStore(defaults: defaults, tokenStore: TestTokenStore())
+        try await configuration.save(baseURL: "https://telemetry.example", token: "token")
+        let installationID = UUID()
+        let manager = BackgroundTelemetryUploadManager(
+            archive: archive,
+            configuration: configuration,
+            installationID: installationID,
+            control: control,
+            queue: BackgroundUploadQueue(
+                rootURL: storage.appendingPathComponent("UploadQueue", isDirectory: true)
+            ),
+            activateSession: false
+        )
+        let sink = RecordingTelemetrySink()
+        let ingestor = TelemetryIngestor(
+            archive: archive,
+            sink: sink,
+            installationID: installationID,
+            backgroundUploader: manager
+        )
+
+        try await ingestor.deleteAllTelemetry()
+        let result = try await ingestor.ingest(TelemetryTestSupport.sample(), from: UUID())
+        let envelope = try XCTUnwrap(result.envelope)
+        for _ in 0..<50 {
+            if await sink.submittedIDs.contains(envelope.id) { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        let submitted = await sink.submittedIDs
+        let acknowledged = try await archive.acknowledgedIDs(runID: envelope.localRunID)
+        XCTAssertEqual(submitted, [envelope.id])
+        XCTAssertEqual(acknowledged, [envelope.id])
+    }
+
+    func testDeleteDoesNotClearExistingAuthenticationBlock() async throws {
+        let root = try TelemetryTestSupport.temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let archive = TelemetryArchive(rootURL: root)
+        let sink = IsolationTelemetrySink(mode: .authentication)
+        let ingestor = TelemetryIngestor(
+            archive: archive,
+            sink: sink,
+            installationID: UUID()
+        )
+        _ = try await ingestor.ingest(TelemetryTestSupport.sample(), from: UUID())
+        while await sink.submissionSizes.count < 1 { await Task.yield() }
+        while true {
+            if case .blocked = await ingestor.currentStatus().uploadState { break }
+            await Task.yield()
+        }
+
+        try await ingestor.deleteAllTelemetry()
+        _ = try await ingestor.ingest(
+            TelemetryTestSupport.sample(sequence: 2, start: 456),
+            from: UUID()
+        )
+        try await Task.sleep(for: .milliseconds(30))
+
+        let submissionCount = await sink.submissionSizes.count
+        XCTAssertEqual(submissionCount, 1)
+        if case .blocked = await ingestor.currentStatus().uploadState {} else {
+            XCTFail("Expected deletion to preserve the authentication block")
+        }
+    }
+
+    func testConfigurationChangeDuringDeletionReplaysAndSupersedesOldAuthenticationBlock() async throws {
+        let root = try TelemetryTestSupport.temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let storage = root.appendingPathComponent("RunSync", isDirectory: true)
+        let gate = TelemetryUploadFenceGate()
+        let control = TelemetryUploadControlStore(rootURL: storage, gate: gate)
+        let archive = TelemetryArchive(
+            rootURL: storage.appendingPathComponent("Runs", isDirectory: true),
+            storageRootURL: storage,
+            uploadFenceGate: gate
+        )
+        let queue = BackgroundUploadQueue(
+            rootURL: storage.appendingPathComponent("UploadQueue", isDirectory: true)
+        )
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: UUID().uuidString))
+        let configuration = ServerConfigurationStore(defaults: defaults, tokenStore: TestTokenStore())
+        try await configuration.save(baseURL: "https://telemetry.example", token: "old-token")
+        let envelope = TelemetryTestSupport.envelope()
+        try await archive.append(envelope)
+        let assignment = AsyncCheckpoint()
+        let manager = BackgroundTelemetryUploadManager(
+            archive: archive,
+            configuration: configuration,
+            installationID: envelope.installationID,
+            control: control,
+            queue: queue,
+            activateSession: false,
+            stagingEnabled: { true },
+            assignmentCheckpoint: { await assignment.suspend() }
+        )
+        let sink = IsolationTelemetrySink(mode: .authentication)
+        let ingestor = TelemetryIngestor(
+            archive: archive,
+            sink: sink,
+            installationID: envelope.installationID,
+            backgroundUploader: manager
+        )
+        _ = try await ingestor.recoverPending()
+        while true {
+            if case .blocked = await ingestor.currentStatus().uploadState { break }
+            await Task.yield()
+        }
+
+        let staging = Task { await manager.stageIfEnabled([envelope]) }
+        await assignment.waitUntilSuspended()
+        let deletion = Task { try await ingestor.deleteAllTelemetry() }
+        while !(await ingestor.deletionIsInProgress()) { await Task.yield() }
+        try await configuration.save(baseURL: "https://telemetry.example", token: "new-token")
+        await sink.setMode(.acceptAll)
+        _ = await ingestor.configurationChanged(configured: true)
+
+        await assignment.resume()
+        await staging.value
+        try await deletion.value
+
+        let result = try await ingestor.ingest(
+            TelemetryTestSupport.sample(sequence: 2, start: 456),
+            from: envelope.garminDeviceIdentifier
+        )
+        let newEnvelope = try XCTUnwrap(result.envelope)
+        for _ in 0..<50 {
+            if try await archive.acknowledgedIDs(runID: newEnvelope.localRunID).contains(newEnvelope.id) {
+                break
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        let binding = try await manager.requestBinding()
+        let acknowledgements = try await archive.acknowledgedIDs(runID: newEnvelope.localRunID)
+        XCTAssertEqual(binding?.server.token, "new-token")
+        XCTAssertEqual(acknowledgements, [newEnvelope.id])
+        if case .blocked = await ingestor.currentStatus().uploadState {
+            XCTFail("Expected changed credentials to supersede the old authentication block")
+        }
+    }
+
+    func testBlockedManualTransientResultAutomaticallyRetries() async throws {
+        let root = try TelemetryTestSupport.temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let archive = TelemetryArchive(rootURL: root)
+        let envelope = TelemetryTestSupport.envelope()
+        try await archive.append(envelope)
+        let sink = BlockedTransientThenSuccessSink()
+        let sleepGate = RetrySleepGate()
+        let ingestor = TelemetryIngestor(
+            archive: archive,
+            sink: sink,
+            installationID: envelope.installationID,
+            jitter: { 0 },
+            sleep: { _ in await sleepGate.sleep() }
+        )
+        _ = try await ingestor.recoverPending()
+        await sink.waitForSubmissionCount(1)
+
+        _ = await ingestor.retryPending(force: true)
+        await sink.waitForSubmissionCount(2)
+        await sleepGate.waitUntilSleeping()
+        await sleepGate.fire()
+        await sink.waitForSubmissionCount(3)
+        while (await ingestor.currentStatus()).pendingCount != 0 { await Task.yield() }
+
+        let acknowledged = try await archive.acknowledgedIDs(runID: envelope.localRunID)
+        let submissionCount = await sink.submissionCount
+        XCTAssertEqual(submissionCount, 3)
+        XCTAssertEqual(acknowledged, [envelope.id])
+    }
+
     func testInstallationOwnershipConflictBlocksWithoutQuarantine() async throws {
         let root = try TelemetryTestSupport.temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -1428,6 +1613,31 @@ private actor RetryCoordinatorTelemetrySink: TelemetrySink {
     func resumeSecondSubmission() {
         secondSubmissionContinuation?.resume()
         secondSubmissionContinuation = nil
+    }
+}
+
+private actor BlockedTransientThenSuccessSink: TelemetrySink {
+    private(set) var submissionCount = 0
+    private var waiters: [(Int, CheckedContinuation<Void, Never>)] = []
+
+    func submit(_ envelopes: [TelemetryEnvelope]) throws -> [UUID] {
+        submissionCount += 1
+        let ready = waiters.filter { $0.0 <= submissionCount }
+        waiters.removeAll { $0.0 <= submissionCount }
+        ready.forEach { $0.1.resume() }
+        switch submissionCount {
+        case 1:
+            throw TelemetrySinkError.authentication
+        case 2:
+            throw TelemetrySinkError.transient(retryAfter: nil)
+        default:
+            return envelopes.map(\.id)
+        }
+    }
+
+    func waitForSubmissionCount(_ count: Int) async {
+        guard submissionCount < count else { return }
+        await withCheckedContinuation { waiters.append((count, $0)) }
     }
 }
 
