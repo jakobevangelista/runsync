@@ -6,6 +6,11 @@ struct ServerConfiguration: Equatable, Sendable {
     let token: String
 }
 
+struct ServerConfigurationSnapshot: Sendable {
+    let configuration: ServerConfiguration?
+    let revision: UInt64
+}
+
 protocol IngestTokenStore: Sendable {
     func load() throws -> String?
     func save(_ token: String) throws
@@ -16,6 +21,7 @@ enum ServerConfigurationError: Error, Equatable {
     case invalidURL
     case tokenRequired
     case keychain(OSStatus)
+    case staleRevision
 }
 
 final class KeychainIngestTokenStore: IngestTokenStore, @unchecked Sendable {
@@ -74,6 +80,8 @@ final class KeychainIngestTokenStore: IngestTokenStore, @unchecked Sendable {
 
 actor ServerConfigurationStore {
     private static let baseURLKey = "RunSyncServerBaseURL"
+    private static let revisionKey = "RunSyncServerConfigurationRevision"
+    static let updateInProgressKey = "RunSyncServerConfigurationUpdateInProgress"
     private let defaults: UserDefaults
     private let tokenStore: any IngestTokenStore
     private let allowInsecureForTesting: Bool
@@ -89,34 +97,96 @@ actor ServerConfigurationStore {
     }
 
     func current() throws -> ServerConfiguration? {
-        guard let value = defaults.string(forKey: Self.baseURLKey), !value.isEmpty else { return nil }
+        try snapshot().configuration
+    }
+
+    func snapshot() throws -> ServerConfigurationSnapshot {
+        try recoverIncompleteUpdateIfNeeded()
+        let revision = currentRevision
+        guard let value = defaults.string(forKey: Self.baseURLKey), !value.isEmpty else {
+            return ServerConfigurationSnapshot(configuration: nil, revision: revision)
+        }
         let url = try validatedURL(value)
-        guard let token = try tokenStore.load(), !token.isEmpty else { return nil }
-        return ServerConfiguration(baseURL: url, token: token)
+        guard let token = try tokenStore.load(), !token.isEmpty else {
+            return ServerConfigurationSnapshot(configuration: nil, revision: revision)
+        }
+        return ServerConfigurationSnapshot(
+            configuration: ServerConfiguration(baseURL: url, token: token),
+            revision: revision
+        )
     }
 
     func displayState() -> (baseURL: String, tokenConfigured: Bool) {
+        do {
+            try recoverIncompleteUpdateIfNeeded()
+        } catch {
+            return ("", false)
+        }
         let url = defaults.string(forKey: Self.baseURLKey) ?? ""
         return (url, (try? tokenStore.load())?.isEmpty == false)
     }
 
     func save(baseURL: String, token: String?) throws {
+        try recoverIncompleteUpdateIfNeeded()
         let trimmedURL = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedURL.isEmpty else {
-            defaults.removeObject(forKey: Self.baseURLKey)
+            beginUpdate()
             try tokenStore.delete()
+            defaults.removeObject(forKey: Self.baseURLKey)
+            advanceRevision()
+            finishUpdate()
             return
         }
         let url = try validatedURL(trimmedURL)
         let existingToken = try tokenStore.load()
+        let tokenToSave: String?
         if let token {
             let trimmedToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmedToken.isEmpty else { throw ServerConfigurationError.tokenRequired }
-            try tokenStore.save(trimmedToken)
+            tokenToSave = trimmedToken
         } else if existingToken?.isEmpty != false {
             throw ServerConfigurationError.tokenRequired
+        } else {
+            tokenToSave = nil
         }
+        beginUpdate()
+        if let tokenToSave { try tokenStore.save(tokenToSave) }
         defaults.set(url.absoluteString, forKey: Self.baseURLKey)
+        advanceRevision()
+        finishUpdate()
+    }
+
+    func snapshot(atLeastRevision minimumRevision: UInt64) throws -> ServerConfigurationSnapshot {
+        let current = try snapshot()
+        guard current.revision < minimumRevision else { return current }
+        defaults.set(Int64(bitPattern: minimumRevision), forKey: Self.revisionKey)
+        return try snapshot()
+    }
+
+    private func advanceRevision() {
+        defaults.set(Int64(bitPattern: currentRevision &+ 1), forKey: Self.revisionKey)
+    }
+
+    private func beginUpdate() {
+        defaults.set(true, forKey: Self.updateInProgressKey)
+        defaults.synchronize()
+    }
+
+    private func finishUpdate() {
+        defaults.removeObject(forKey: Self.updateInProgressKey)
+        defaults.synchronize()
+    }
+
+    private func recoverIncompleteUpdateIfNeeded() throws {
+        guard defaults.bool(forKey: Self.updateInProgressKey) else { return }
+        try tokenStore.delete()
+        defaults.removeObject(forKey: Self.baseURLKey)
+        advanceRevision()
+        finishUpdate()
+    }
+
+    private var currentRevision: UInt64 {
+        (defaults.object(forKey: Self.revisionKey) as? NSNumber)?.uint64Value ?? 0
     }
 
     private func validatedURL(_ value: String) throws -> URL {

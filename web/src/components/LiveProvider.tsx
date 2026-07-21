@@ -13,7 +13,7 @@ import {
   type ActivityAction,
   type ActivityState,
 } from "../lib/activity-store";
-import { sampleSchema, sessionSchema, type LiveSession } from "../lib/contracts";
+import { sampleSchema, sessionSchema, UUID, type LiveSession } from "../lib/contracts";
 import { reconnectDelay, streamSSE } from "../lib/sse";
 
 type LiveContextValue = {
@@ -29,7 +29,7 @@ export function LiveProvider({ overlayId, children }: { overlayId: string; child
     (_: LiveSession | undefined, next: LiveSession | undefined) => next,
     undefined,
   );
-  const latestEnvelope = useRef<string | undefined>(undefined);
+  const replayCursor = useRef<string | undefined>(undefined);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -39,9 +39,8 @@ export function LiveProvider({ overlayId, children }: { overlayId: string; child
       dispatch,
       (next) => {
         setSession(next);
-        latestEnvelope.current = next.snapshot.latest?.envelopeId;
       },
-      latestEnvelope,
+      replayCursor,
     );
     return () => controller.abort();
   }, [overlayId]);
@@ -63,25 +62,35 @@ export function LiveProvider({ overlayId, children }: { overlayId: string; child
   return <LiveContext value={{ state, session }}>{children}</LiveContext>;
 }
 
-async function runLiveClient(
+type LiveClientDependencies = {
+  fetcher?: typeof fetch;
+  waitForRetry?: typeof wait;
+  retryDelay?: typeof reconnectDelay;
+};
+
+export async function runLiveClient(
   overlayId: string,
   signal: AbortSignal,
   dispatch: Dispatch<ActivityAction>,
   onSession: (session: LiveSession) => void,
-  latestEnvelope: { current: string | undefined },
+  replayCursor: { current: string | undefined },
+  dependencies: LiveClientDependencies = {},
 ) {
+  const fetcher = dependencies.fetcher ?? fetch;
+  const waitForRetry = dependencies.waitForRetry ?? wait;
+  const retryDelay = dependencies.retryDelay ?? reconnectDelay;
   let session: LiveSession | undefined;
   let attempt = 0;
-  let reset = false;
+  let needsBootstrap = false;
   while (!signal.aborted) {
     try {
-      if (!session || reset || Date.parse(session.expiresAt) - Date.now() < 30_000) {
+      if (!session || needsBootstrap || Date.parse(session.expiresAt) - Date.now() < 30_000) {
         dispatch({ type: "connection", connection: session ? "reconnecting" : "connecting" });
-        session = await fetchSession(overlayId, signal);
+        session = await fetchSession(overlayId, signal, fetcher);
+        replayCursor.current = session.replayAfterEnvelopeId ?? undefined;
         onSession(session);
         dispatch({ type: "bootstrap", session });
-        reset = false;
-        attempt = 0;
+        needsBootstrap = false;
         if (session.viewerToken === "fixture-viewer-token") return;
       }
 
@@ -97,22 +106,24 @@ async function runLiveClient(
           Accept: "text/event-stream",
           Authorization: `Bearer ${session.viewerToken}`,
         };
-        if (latestEnvelope.current) headers["Last-Event-ID"] = latestEnvelope.current;
+        if (replayCursor.current) headers["Last-Event-ID"] = replayCursor.current;
         const url = `${session.apiPublicUrl}/v1/channels/${encodeURIComponent(session.channelSlug)}/stream`;
-        const response = await fetch(url, {
+        const response = await fetcher(url, {
           headers,
           cache: "no-store",
           signal: streamController.signal,
         });
         await streamSSE(response, (message) => {
           if (message.event === "reset" || message.event === "activity") {
-            reset = true;
+            needsBootstrap = true;
             streamController.abort();
             return;
           }
           if (message.event !== "sample") return;
           const sample = sampleSchema.parse(JSON.parse(message.data));
-          latestEnvelope.current = message.id ?? sample.envelopeId;
+          if (message.id === sample.envelopeId && UUID.safeParse(message.id).success) {
+            replayCursor.current = message.id;
+          }
           dispatch({ type: "sample", sample });
           attempt = 0;
         });
@@ -121,22 +132,19 @@ async function runLiveClient(
         signal.removeEventListener("abort", stop);
       }
       if (Date.parse(session.expiresAt) - Date.now() < 30_000) session = undefined;
-      if (!reset) {
-        dispatch({ type: "connection", connection: "reconnecting" });
-        await wait(reconnectDelay(attempt++), signal);
-      }
+      dispatch({ type: "connection", connection: "reconnecting" });
+      await waitForRetry(retryDelay(attempt++), signal);
     } catch (error) {
       if (signal.aborted) return;
-      if (reset) continue;
       dispatch({ type: "connection", connection: "reconnecting" });
-      await wait(reconnectDelay(attempt++), signal);
+      await waitForRetry(retryDelay(attempt++), signal);
       if (error instanceof SyntaxError) session = undefined;
     }
   }
 }
 
-async function fetchSession(overlayId: string, signal: AbortSignal) {
-  const response = await fetch(`/api/live/${encodeURIComponent(overlayId)}/session`, {
+async function fetchSession(overlayId: string, signal: AbortSignal, fetcher: typeof fetch) {
+  const response = await fetcher(`/api/live/${encodeURIComponent(overlayId)}/session`, {
     method: "POST",
     headers: { Accept: "application/json" },
     cache: "no-store",

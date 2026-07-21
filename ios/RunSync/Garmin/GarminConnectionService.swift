@@ -2,6 +2,16 @@
 import Foundation
 import UIKit
 
+struct GarminRecoveryResult: Equatable, Sendable {
+    let captureResumed: Bool
+    let sessionReconciled: Bool
+    let currentActivityID: UUID?
+    let pendingEnvelopeCount: Int
+    let oldestPendingAge: TimeInterval?
+    let uploadState: TelemetryUploadState
+    let lastSafeErrorCategory: String?
+}
+
 @MainActor
 final class GarminConnectionService: NSObject {
     private let model: AppModel
@@ -12,6 +22,7 @@ final class GarminConnectionService: NSObject {
     private let connectIQ = ConnectIQ.sharedInstance()!
     private var devicesByID: [UUID: IQDevice] = [:]
     private var appsByDeviceID: [UUID: IQApp] = [:]
+    private var recoveryTask: Task<GarminRecoveryResult, Never>?
     nonisolated private let receiptPipeline: GarminReceiptPipeline
 
     init(
@@ -74,7 +85,8 @@ final class GarminConnectionService: NSObject {
         Task { [weak self, ingestor] in
             do {
                 _ = await ingestor.captureChanged(enabled: settings.captureEnabled)
-                let status = try await ingestor.recoverPending()
+                await ingestor.startConnectivityMonitoring()
+                let status = try await ingestor.applicationBecameActive()
                 let session = try await ingestor.currentActivitySession()
                 let configurationState = await self?.serverConfiguration?.displayState()
                 await MainActor.run {
@@ -157,6 +169,56 @@ final class GarminConnectionService: NSObject {
         }
     }
 
+    func retryQuarantinedEnvelopes() {
+        Task { [weak self, ingestor] in
+            let status = await ingestor.retryQuarantined()
+            await MainActor.run {
+                self?.model.updateServerStatus(status)
+                self?.model.record("Explicitly retried quarantined envelopes")
+            }
+        }
+    }
+
+    func applicationBecameActive() {
+        let settings = captureSettings.load()
+        model.captureEnabled = settings.captureEnabled
+        model.selectedCaptureDeviceID = settings.selectedDeviceID
+        Task { [weak self, ingestor] in
+            do {
+                let status = try await ingestor.applicationBecameActive()
+                let session = try await ingestor.currentActivitySession()
+                await MainActor.run {
+                    self?.model.updateServerStatus(status)
+                    self?.model.restoreSession(session)
+                }
+            } catch {
+                await MainActor.run { self?.model.ingestFailed(error) }
+            }
+        }
+    }
+
+    func recoverAndRetry() async -> GarminRecoveryResult {
+        if let recoveryTask { return await recoveryTask.value }
+        let task = Task { [weak self] in
+            guard let self else {
+                return GarminRecoveryResult(
+                    captureResumed: false,
+                    sessionReconciled: false,
+                    currentActivityID: nil,
+                    pendingEnvelopeCount: 0,
+                    oldestPendingAge: nil,
+                    uploadState: .idle,
+                    lastSafeErrorCategory: "service_unavailable"
+                )
+            }
+            return await self.performRecovery()
+        }
+        recoveryTask = task
+        let result = await task.value
+        recoveryTask = nil
+        return result
+    }
+
     func setCaptureEnabled(_ enabled: Bool) {
         let accepted = receiptPipeline.enqueueOperation { [model, ingestor, captureSettings] in
             if enabled {
@@ -208,10 +270,15 @@ final class GarminConnectionService: NSObject {
     }
 
     func deleteAllTelemetry() {
-        let accepted = receiptPipeline.enqueueOperation { [model, ingestor] in
+        let accepted = receiptPipeline.enqueueOperation { [model, ingestor, captureSettings] in
             do {
+                captureSettings.setCaptureEnabled(false)
+                _ = await ingestor.captureChanged(enabled: false)
                 try await ingestor.deleteAllTelemetry()
-                await MainActor.run { model.telemetryDeleted() }
+                await MainActor.run {
+                    model.captureEnabled = false
+                    model.telemetryDeleted()
+                }
                 return true
             } catch {
                 await MainActor.run { model.ingestFailed(error) }
@@ -219,6 +286,88 @@ final class GarminConnectionService: NSObject {
             }
         }
         if !accepted { stopCaptureAfterQueueFailure() }
+    }
+
+    private func performRecovery() async -> GarminRecoveryResult {
+        model.recoveryInProgress = true
+        defer { model.recoveryInProgress = false }
+
+        do {
+            _ = try await ingestor.prepareManualRecovery()
+        } catch {
+            model.ingestFailed(error)
+        }
+
+        let localResult = await withCheckedContinuation { continuation in
+            let accepted = receiptPipeline.requestRecovery { [ingestor, captureSettings] in
+                let settings = captureSettings.load()
+                do {
+                    try await ingestor.reconcileSession()
+                    captureSettings.setSelectedDeviceID(settings.selectedDeviceID)
+                    captureSettings.setCaptureEnabled(true)
+                    _ = await ingestor.captureChanged(enabled: true)
+                    let session = try await ingestor.currentActivitySession()
+                    continuation.resume(returning: (true, session?.localRunID, Optional<String>.none))
+                    return true
+                } catch {
+                    captureSettings.setCaptureEnabled(false)
+                    _ = await ingestor.captureChanged(enabled: false)
+                    continuation.resume(returning: (false, Optional<UUID>.none, "session_reconciliation"))
+                    return false
+                }
+            }
+            if !accepted {
+                continuation.resume(returning: (false, Optional<UUID>.none, "recovery_already_running"))
+            }
+        }
+
+        let status = await ingestor.currentStatus()
+        let settings = captureSettings.load()
+        model.captureEnabled = localResult.0
+        model.selectedCaptureDeviceID = settings.selectedDeviceID
+        model.updateServerStatus(status)
+        if localResult.0 {
+            if status.localArchiveIssueCount == 0 {
+                model.archiveStatus = "Healthy"
+            }
+            model.record("Recovery completed; capture resumed")
+            receiptPipeline.resume()
+        } else {
+            model.capturePausedForReconciliation()
+        }
+        refreshGarminStatus()
+
+        let result = GarminRecoveryResult(
+            captureResumed: localResult.0,
+            sessionReconciled: localResult.0,
+            currentActivityID: localResult.1,
+            pendingEnvelopeCount: status.pendingCount,
+            oldestPendingAge: status.oldestPendingAge,
+            uploadState: status.uploadState,
+            lastSafeErrorCategory: localResult.2
+                ?? status.lastSafeErrorCategory
+                ?? safeUploadErrorCategory(status.uploadState)
+        )
+        model.recoveryResult = result
+        return result
+    }
+
+    private func safeUploadErrorCategory(_ state: TelemetryUploadState) -> String? {
+        switch state {
+        case .notConfigured:
+            return "upload_not_configured"
+        case .blocked(let reason):
+            return reason == "Authentication rejected" ? "upload_authentication" : "upload_blocked"
+        default:
+            return nil
+        }
+    }
+
+    private func refreshGarminStatus() {
+        for device in devicesByID.values {
+            updateAppStatus(for: device)
+        }
+        model.record("Refreshed Garmin device and data field status")
     }
 
     private func replaceDevices(_ devices: [IQDevice], persist: Bool) {
@@ -281,7 +430,7 @@ final class GarminConnectionService: NSObject {
         captureSettings.setCaptureEnabled(false)
         Task { [ingestor] in _ = await ingestor.captureChanged(enabled: false) }
         model.captureEnabled = false
-        model.receiptQueueOverflowed()
+        model.receiptQueueOverflowed(total: receiptPipeline.droppedReceiptCount)
     }
 
 }

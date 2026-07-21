@@ -57,7 +57,7 @@ final class GarminReceiptPipelineTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(10))
         }
 
-        XCTAssertTrue(pipeline.enqueueOperation {
+        XCTAssertTrue(pipeline.requestRecovery {
             await recorder.recordRecovery()
             return true
         })
@@ -68,6 +68,33 @@ final class GarminReceiptPipelineTests: XCTestCase {
 
         let events = await recorder.events
         XCTAssertEqual(events, ["receipt-1", "recovery", "receipt-2"])
+    }
+
+    func testRecoveryBarrierCannotBeRejectedByFullReceiptQueueAndCoalesces() async throws {
+        let gate = RecoveryBarrierRecorder()
+        let pipeline = GarminReceiptPipeline(maximumQueuedReceipts: 1) { receipt in
+            await gate.consume(receipt)
+            return .processed
+        }
+        let deviceID = UUID()
+        XCTAssertTrue(pipeline.enqueue(TelemetryTestSupport.sample(sequence: 1), from: deviceID))
+        await gate.waitUntilConsuming()
+        XCTAssertTrue(pipeline.enqueue(TelemetryTestSupport.sample(sequence: 2), from: deviceID))
+
+        XCTAssertTrue(pipeline.requestRecovery {
+            await gate.recover()
+            return true
+        })
+        XCTAssertFalse(pipeline.requestRecovery { true })
+        await gate.releaseReceipt()
+        for _ in 0..<50 {
+            if await gate.events.count == 3 { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        let events = await gate.events
+        XCTAssertEqual(events, ["receipt-1", "recovery", "receipt-2"])
+        XCTAssertEqual(pipeline.droppedReceiptCount, 0)
     }
 }
 
@@ -97,4 +124,33 @@ private actor PausingReceiptRecorder {
     }
 
     func recordRecovery() { events.append("recovery") }
+}
+
+private actor RecoveryBarrierRecorder {
+    private(set) var events: [String] = []
+    private var receiptContinuation: CheckedContinuation<Void, Never>?
+    private var consumingContinuation: CheckedContinuation<Void, Never>?
+
+    func consume(_ receipt: GarminReceipt) async {
+        events.append("receipt-\(receipt.sample.sequence)")
+        if receipt.sample.sequence == 1 {
+            consumingContinuation?.resume()
+            consumingContinuation = nil
+            await withCheckedContinuation { receiptContinuation = $0 }
+        }
+    }
+
+    func waitUntilConsuming() async {
+        if !events.isEmpty { return }
+        await withCheckedContinuation { consumingContinuation = $0 }
+    }
+
+    func releaseReceipt() {
+        receiptContinuation?.resume()
+        receiptContinuation = nil
+    }
+
+    func recover() {
+        events.append("recovery")
+    }
 }

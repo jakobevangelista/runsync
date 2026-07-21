@@ -1,6 +1,7 @@
 package api
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -27,17 +29,26 @@ const maxBody = 256 << 10
 type Server struct {
 	pool    *pgxpool.Pool
 	ingest  *ingest.Store
-	live    *live.Store
+	live    liveStore
 	hub     *live.Hub
 	key     []byte
 	origins map[string]struct{}
 	proxies []netip.Prefix
 	logger  *slog.Logger
 	limiter *limiter
+	ingests *userLocks
+}
+
+type liveStore interface {
+	Channel(context.Context, uuid.UUID, string) (live.Channel, error)
+	Bootstrap(context.Context, live.Channel, time.Time) (live.Bootstrap, error)
+	Snapshot(context.Context, live.Channel, time.Time) (live.Snapshot, error)
+	Route(context.Context, live.Channel, time.Time) (live.Route, error)
+	Replay(context.Context, live.Channel, uuid.UUID, int) ([]live.SampleView, bool, error)
 }
 
 func New(pool *pgxpool.Pool, key []byte, origins map[string]struct{}, proxies []netip.Prefix, logger *slog.Logger) *Server {
-	return &Server{pool: pool, ingest: ingest.New(pool), live: live.NewStore(pool), hub: live.NewHub(32), key: key, origins: origins, proxies: proxies, logger: logger, limiter: newLimiter(120, 200)}
+	return &Server{pool: pool, ingest: ingest.New(pool), live: live.NewStore(pool), hub: live.NewHub(32), key: key, origins: origins, proxies: proxies, logger: logger, limiter: newLimiter(120, 200), ingests: newUserLocks()}
 }
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -45,6 +56,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /readyz", s.ready)
 	mux.HandleFunc("POST /v1/telemetry/batches", s.batch)
 	mux.HandleFunc("POST /v1/viewer-tokens", s.viewerToken)
+	mux.HandleFunc("GET /v1/channels/{slug}/bootstrap", s.bootstrap)
 	mux.HandleFunc("GET /v1/channels/{slug}/snapshot", s.snapshot)
 	mux.HandleFunc("GET /v1/channels/{slug}/route", s.route)
 	mux.HandleFunc("GET /v1/channels/{slug}/stream", s.stream)
@@ -78,25 +90,34 @@ func (s *Server) batch(w http.ResponseWriter, r *http.Request) {
 	}
 	now := time.Now().UTC()
 	if err := b.Validate(now); err != nil {
-		writeError(w, 422, "validation_failed", err.Error())
+		var validation *telemetry.ValidationError
+		if errors.As(err, &validation) {
+			writeAPIError(w, http.StatusUnprocessableEntity, string(validation.Code), validation.Error(), validation.EnvelopeID)
+		} else {
+			writeAPIError(w, http.StatusUnprocessableEntity, string(telemetry.ValidationInvalidRequest), "invalid telemetry request", nil)
+		}
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
+	unlock, err := s.ingests.Lock(ctx, p.UserID)
+	if err != nil {
+		writeError(w, http.StatusRequestTimeout, "request_timeout", "request canceled while waiting to ingest")
+		return
+	}
 	result, err := s.ingest.Ingest(ctx, p, b, now)
 	if err != nil {
-		switch {
-		case errors.Is(err, ingest.ErrConflict):
-			writeError(w, 409, "envelope_conflict", "an envelope ID has different content")
-		case errors.Is(err, ingest.ErrOwnership):
-			writeError(w, 403, "ownership_conflict", "resource belongs to another installation or owner")
-		default:
-			s.logger.Error("ingest failed", "error", err)
+		unlock()
+		if status, code, message, envelopeID, ok := ingestRejectionResponse(err); ok {
+			writeAPIError(w, status, code, message, envelopeID)
+		} else {
+			s.logger.Error("ingest failed", "category", "store_error")
 			writeError(w, 500, "internal_error", "internal server error")
 		}
 		return
 	}
 	s.publishIngest(result)
+	unlock()
 	writeJSON(w, 200, map[string]any{"acknowledgedEnvelopeIds": result.Acknowledged, "serverTime": now})
 }
 func (s *Server) publishIngest(result ingest.Result) {
@@ -105,11 +126,29 @@ func (s *Server) publishIngest(result ingest.Result) {
 			s.hub.Publish(channel, live.Message{Kind: "activity", Event: event})
 		}
 	}
-	for _, event := range result.Events {
+	events := append([]telemetry.Event(nil), result.Events...)
+	slices.SortFunc(events, func(a, b telemetry.Event) int {
+		return cmp.Compare(a.IngestCursor, b.IngestCursor)
+	})
+	for _, event := range events {
 		for _, channel := range result.Channels[event.Envelope.ActivityID] {
 			s.hub.Publish(channel, live.Message{Kind: "sample", Event: event})
 		}
 	}
+}
+
+func (s *Server) bootstrap(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	c, ok := s.readChannel(w, r)
+	if !ok {
+		return
+	}
+	out, err := s.live.Bootstrap(r.Context(), c, time.Now().UTC())
+	if err != nil {
+		s.channelError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 type viewerRequest struct {
@@ -213,6 +252,8 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 		unauthorized(w)
 		return
 	}
+	sub := s.hub.Subscribe(claims.ChannelID)
+	defer sub.Close()
 	c, err := s.live.Channel(r.Context(), claims.UserID, claims.Slug)
 	if err != nil || c.ID != claims.ChannelID {
 		unauthorized(w)
@@ -255,25 +296,23 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 		}
 		return nil
 	}
-	sub := s.hub.Subscribe(c.ID)
-	defer sub.Close()
+	replayed := map[uuid.UUID]struct{}{}
 	if raw := r.Header.Get("Last-Event-ID"); raw != "" {
 		id, e := uuid.Parse(raw)
 		if e != nil {
-			if send("reset", "", map[string]string{"reason": "invalid_replay_position"}) != nil {
-				return
-			}
+			_ = send("reset", "", map[string]string{"reason": "invalid_replay_position"})
+			return
 		} else {
 			items, reset, e := s.live.Replay(r.Context(), c, id, 200)
 			if e != nil {
 				return
 			}
 			if reset {
-				if send("reset", "", map[string]string{"reason": "replay_unavailable"}) != nil {
-					return
-				}
+				_ = send("reset", "", map[string]string{"reason": "replay_unavailable"})
+				return
 			} else {
 				for _, item := range items {
+					replayed[item.EnvelopeID] = struct{}{}
 					if send("sample", item.EnvelopeID.String(), item) != nil {
 						return
 					}
@@ -310,6 +349,12 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 		case message, open := <-sub.C:
 			if !open {
 				return
+			}
+			if message.Kind == "sample" {
+				if _, ok := replayed[message.Event.Envelope.EnvelopeID]; ok {
+					delete(replayed, message.Event.Envelope.EnvelopeID)
+					continue
+				}
 			}
 			current, e := s.live.Channel(r.Context(), claims.UserID, claims.Slug)
 			if e != nil {
@@ -375,8 +420,32 @@ func unauthorized(w http.ResponseWriter) {
 	w.Header().Set("WWW-Authenticate", `Bearer realm="runsync"`)
 	writeError(w, 401, "unauthorized", "valid bearer credentials are required")
 }
+func ingestRejectionResponse(err error) (int, string, string, *uuid.UUID, bool) {
+	var rejection *ingest.RejectionError
+	if !errors.As(err, &rejection) {
+		return 0, "", "", nil, false
+	}
+	switch rejection.Code {
+	case ingest.CodeEnvelopeConflict:
+		return http.StatusConflict, string(rejection.Code), "envelope conflicts with existing telemetry", rejection.EnvelopeID, true
+	case ingest.CodeInstallationOwnershipConflict:
+		return http.StatusForbidden, string(rejection.Code), "installation is not available to this credential", rejection.EnvelopeID, true
+	case ingest.CodeEnvelopeOwnershipConflict:
+		return http.StatusForbidden, string(rejection.Code), "envelope is not available to this credential", rejection.EnvelopeID, true
+	default:
+		return 0, "", "", nil, false
+	}
+}
 func writeError(w http.ResponseWriter, status int, code, message string) {
-	writeJSON(w, status, map[string]any{"error": map[string]string{"code": code, "message": message}})
+	writeAPIError(w, status, code, message, nil)
+}
+func writeAPIError(w http.ResponseWriter, status int, code, message string, envelopeID *uuid.UUID) {
+	writeJSON(w, status, map[string]any{"error": struct {
+		Code       string     `json:"code"`
+		Message    string     `json:"message"`
+		EnvelopeID *uuid.UUID `json:"envelopeId"`
+		Retryable  bool       `json:"retryable"`
+	}{Code: code, Message: message, EnvelopeID: envelopeID, Retryable: status == http.StatusRequestTimeout || status == http.StatusTooEarly || status == http.StatusTooManyRequests || status >= 500}})
 }
 func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -444,6 +513,61 @@ type limiter struct {
 	rate, burst float64
 	entries     map[string]*limitEntry
 }
+
+type userLocks struct {
+	mu    sync.Mutex
+	locks map[uuid.UUID]*userLock
+}
+
+type userLock struct {
+	token chan struct{}
+	refs  int
+}
+
+func newUserLocks() *userLocks { return &userLocks{locks: map[uuid.UUID]*userLock{}} }
+
+func (l *userLocks) Lock(ctx context.Context, user uuid.UUID) (func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	l.mu.Lock()
+	lock := l.locks[user]
+	if lock == nil {
+		lock = &userLock{token: make(chan struct{}, 1)}
+		lock.token <- struct{}{}
+		l.locks[user] = lock
+	}
+	lock.refs++
+	l.mu.Unlock()
+	select {
+	case <-ctx.Done():
+		l.releaseRef(user, lock)
+		return nil, ctx.Err()
+	case <-lock.token:
+		var once sync.Once
+		return func() {
+			once.Do(func() {
+				l.mu.Lock()
+				lock.token <- struct{}{}
+				lock.refs--
+				if lock.refs == 0 {
+					delete(l.locks, user)
+				}
+				l.mu.Unlock()
+			})
+		}, nil
+	}
+}
+
+func (l *userLocks) releaseRef(user uuid.UUID, lock *userLock) {
+	l.mu.Lock()
+	lock.refs--
+	if lock.refs == 0 {
+		delete(l.locks, user)
+	}
+	l.mu.Unlock()
+}
+
 type limitEntry struct {
 	tokens float64
 	at     time.Time

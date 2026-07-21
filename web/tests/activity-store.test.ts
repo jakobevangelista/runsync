@@ -9,6 +9,7 @@ const session: LiveSession = {
   apiPublicUrl: "https://api.example.test",
   channelSlug: "live",
   mapboxAccessToken: "",
+  replayAfterEnvelopeId: fixtureRoute.points[0]!.envelopeId,
   snapshot: fixtureSnapshot,
   route: fixtureRoute,
 };
@@ -177,5 +178,29 @@ describe("activity reducer", () => {
     expect(next.route).toEqual([]);
     expect(next.latest).toBeUndefined();
     expect(next.paceWindow).toEqual([]);
+  });
+
+  it("replaces same-activity geometry when the authoritative policy is tightened", () => {
+    const precise = activityReducer(initialActivityState, { type: "bootstrap", session });
+    const hidden = activityReducer(precise, {
+      type: "bootstrap",
+      session: {
+        ...session,
+        snapshot: {
+          ...fixtureSnapshot,
+          latest: {
+            ...fixtureSnapshot.latest!,
+            latitudeMicrodegrees: undefined,
+            longitudeMicrodegrees: undefined,
+          },
+        },
+        route: { ...fixtureRoute, locationPolicy: "hidden", points: [] },
+      },
+    });
+
+    expect(hidden.locationPolicy).toBe("hidden");
+    expect(hidden.route).toEqual([]);
+    expect(hidden.latest?.latitudeMicrodegrees).toBeUndefined();
+    expect(hidden.latest?.longitudeMicrodegrees).toBeUndefined();
   });
 });

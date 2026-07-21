@@ -17,13 +17,20 @@ final class AppModel: ObservableObject {
     @Published var runSyncSessionStatus = "None"
     @Published var archiveStatus = "Ready"
     @Published var serverStatus = "Not configured"
+    @Published var connectivityStatus = "Unknown"
     @Published var serverBaseURL = ""
     @Published var serverTokenConfigured = false
     @Published var serverConfigurationStatus = ""
     @Published var pendingUploadCount = 0
+    @Published var oldestPendingAge: TimeInterval?
     @Published var lastUploadAt: Date?
     @Published var lastAcknowledgementAt: Date?
     @Published var lastSampleAt: Date?
+    @Published var lastArchiveAt: Date?
+    @Published var localArchiveIssueCount = 0
+    @Published var quarantineCount = 0
+    @Published var lastQuarantinedEnvelopeID: UUID?
+    @Published var lastQuarantineCategory: String?
     @Published var currentRunID: UUID?
     @Published var receivedCount = 0
     @Published var invalidMessageCount = 0
@@ -31,8 +38,12 @@ final class AppModel: ObservableObject {
     @Published var captureEnabled = false
     @Published var authorizedDevices: [GarminDeviceOption] = []
     @Published var selectedCaptureDeviceID: UUID?
+    @Published var droppedReceiptCount = 0
+    @Published var recoveryInProgress = false
+    @Published var recoveryResult: GarminRecoveryResult?
     @Published var diagnosticEvents: [String] = []
     private var lastRejectionSignature: String?
+    private var lastQuarantineSignature: String?
 
     func record(_ event: String) {
         logger.notice("\(event, privacy: .public)")
@@ -69,10 +80,11 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func receiptQueueOverflowed() {
+    func receiptQueueOverflowed(total: Int) {
         archiveFailureCount += 1
+        droppedReceiptCount = total
         archiveStatus = "Capture stopped"
-        record("Capture disabled: ordered receipt queue overflow")
+        record("Capture disabled: ordered receipt queue overflow; dropped=\(total)")
     }
 
     func capturePausedForReconciliation() {
@@ -132,16 +144,43 @@ final class AppModel: ObservableObject {
         archiveStatus = "Ready"
         serverStatus = "Not configured"
         pendingUploadCount = 0
+        oldestPendingAge = nil
         lastUploadAt = nil
         lastAcknowledgementAt = nil
+        lastArchiveAt = nil
+        localArchiveIssueCount = 0
+        quarantineCount = 0
+        lastQuarantinedEnvelopeID = nil
+        lastQuarantineCategory = nil
+        lastQuarantineSignature = nil
+        recoveryResult = nil
         record("Deleted local telemetry")
     }
 
     func updateServerStatus(_ status: ServerUploadStatus) {
         serverStatus = status.state
+        connectivityStatus = status.connectivity.label
         pendingUploadCount = status.pendingCount
+        oldestPendingAge = status.oldestPendingAge
         lastUploadAt = status.lastUploadAt
         lastAcknowledgementAt = status.lastAcknowledgementAt
+        lastSampleAt = status.lastWatchReceiptAt ?? lastSampleAt
+        lastArchiveAt = status.lastArchiveAt ?? lastArchiveAt
+        localArchiveIssueCount = status.localArchiveIssueCount
+        quarantineCount = status.quarantineCount
+        lastQuarantinedEnvelopeID = status.lastQuarantinedEnvelopeID
+        lastQuarantineCategory = status.lastSafeErrorCategory
+        if let envelopeID = status.lastQuarantinedEnvelopeID, status.quarantineCount > 0 {
+            let category = status.lastSafeErrorCategory ?? "rejected_envelope"
+            let signature = "\(envelopeID.uuidString)|\(category)"
+            if signature != lastQuarantineSignature {
+                record("Quarantined envelope \(envelopeID.uuidString.prefix(8)); category=\(category)")
+                lastQuarantineSignature = signature
+            }
+        }
+        if status.localArchiveIssueCount > 0 {
+            archiveStatus = "Corruption detected (\(status.localArchiveIssueCount))"
+        }
     }
 
     private func sessionLabel(_ session: ActivitySessionState?) -> String {

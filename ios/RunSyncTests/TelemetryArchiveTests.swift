@@ -101,7 +101,7 @@ final class TelemetryArchiveTests: XCTestCase {
         XCTAssertEqual(pending.map(\.id), [envelope.id])
     }
 
-    func testSkipsCorruptCompleteLinesDuringRecovery() async throws {
+    func testSurfacesCorruptCompleteLinesAndContinuesScanning() async throws {
         let root = try TelemetryTestSupport.temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let archive = TelemetryArchive(rootURL: root)
@@ -114,9 +114,92 @@ final class TelemetryArchiveTests: XCTestCase {
         try sampleHandle.write(contentsOf: Data("{not-json}\n".utf8))
         try sampleHandle.close()
         try Data("{not-json}\n".utf8).write(to: directory.appendingPathComponent("server-acks.ndjson"))
+        let later = TelemetryEnvelope(
+            id: UUID(),
+            installationID: envelope.installationID,
+            localRunID: envelope.localRunID,
+            phoneReceivedAt: envelope.phoneReceivedAt.addingTimeInterval(1),
+            garminDeviceIdentifier: envelope.garminDeviceIdentifier,
+            appVersion: envelope.appVersion,
+            sample: envelope.sample
+        )
+        try await archive.append(later)
+
+        let scan = try await archive.scanPendingEnvelopes()
+        XCTAssertEqual(scan.pendingEnvelopes.map(\.id), [envelope.id, later.id])
+        XCTAssertEqual(scan.issues, [
+            LocalArchiveIssue(
+                runID: envelope.localRunID,
+                fileName: "samples.ndjson",
+                lineNumber: 2,
+                category: .invalidEnvelope
+            ),
+            LocalArchiveIssue(
+                runID: envelope.localRunID,
+                fileName: "server-acks.ndjson",
+                lineNumber: 1,
+                category: .invalidAcknowledgement
+            )
+        ])
+        XCTAssertTrue(try String(contentsOf: sampleURL, encoding: .utf8).contains("{not-json}"))
+    }
+
+    func testPendingOrderUsesEnvelopeIDForEqualTimestamps() async throws {
+        let root = try TelemetryTestSupport.temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let archive = TelemetryArchive(rootURL: root)
+        let lowID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+        let highID = UUID(uuidString: "ffffffff-ffff-ffff-ffff-ffffffffffff")!
+        let high = TelemetryTestSupport.envelope(id: highID)
+        let low = TelemetryEnvelope(
+            id: lowID,
+            installationID: high.installationID,
+            localRunID: high.localRunID,
+            phoneReceivedAt: high.phoneReceivedAt,
+            garminDeviceIdentifier: high.garminDeviceIdentifier,
+            appVersion: high.appVersion,
+            sample: high.sample
+        )
+        try await archive.append(high)
+        try await archive.append(low)
 
         let pending = try await archive.pendingEnvelopes()
-        XCTAssertEqual(pending.map(\.id), [envelope.id])
+        XCTAssertEqual(pending.map(\.id), [lowID, highID])
+    }
+
+    func testQuarantineMetadataSkipsEnvelopeWithoutChangingSourceArchive() async throws {
+        let root = try TelemetryTestSupport.temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let archive = TelemetryArchive(rootURL: root)
+        let envelope = TelemetryTestSupport.envelope()
+        try await archive.append(envelope)
+        let sampleURL = root
+            .appendingPathComponent(envelope.localRunID.uuidString)
+            .appendingPathComponent("samples.ndjson")
+        let original = try Data(contentsOf: sampleURL)
+
+        try await archive.quarantine(TelemetryQuarantineRecord(
+            envelopeID: envelope.id,
+            runID: envelope.localRunID,
+            category: "invalid_envelope",
+            serverCode: .invalidEnvelope,
+            statusCode: 422,
+            quarantinedAt: Date(timeIntervalSince1970: 123),
+            appVersion: "1.0"
+        ))
+
+        let scan = try await archive.scanPendingEnvelopes()
+        let metadataURL = root
+            .appendingPathComponent("Quarantine")
+            .appendingPathComponent("\(envelope.id.uuidString).json")
+        let metadata = try String(contentsOf: metadataURL, encoding: .utf8)
+        XCTAssertTrue(scan.pendingEnvelopes.isEmpty)
+        XCTAssertEqual(scan.quarantined.map(\.envelopeID), [envelope.id])
+        XCTAssertEqual(try Data(contentsOf: sampleURL), original)
+        XCTAssertFalse(metadata.contains("latitude"))
+        XCTAssertFalse(metadata.contains("longitude"))
+        XCTAssertFalse(metadata.contains("token"))
+        XCTAssertFalse(metadata.contains("sample"))
     }
 
     func testPersistsCurrentSessionAndRunMetadataIndependentlyOfAcknowledgements() async throws {

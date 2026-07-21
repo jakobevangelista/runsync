@@ -57,11 +57,21 @@ struct StatusView: View {
             statusCell("Garmin activity", model.activityStatus)
             statusCell("RunSync session", model.runSyncSessionStatus)
             statusCell("Current activity", abbreviatedRunID)
-            statusCell("Archive", model.archiveStatus)
-            statusCell("Server", model.serverStatus)
+            statusCell("Watch receipt", relativeDate(model.lastSampleAt))
+            statusCell("Local archive", model.archiveStatus)
+            statusCell("Archive append", relativeDate(model.lastArchiveAt))
+            statusCell("Connectivity", model.connectivityStatus)
+            statusCell("Upload", model.serverStatus)
             statusCell("Received", "\(model.receivedCount)")
-            statusCell("Pending upload", "\(model.pendingUploadCount)")
-            statusCell("Last ack", relativeDate(model.lastAcknowledgementAt))
+            statusCell("Pending upload", pendingUploadText)
+            statusCell("Last attempt", relativeDate(model.lastUploadAt))
+            statusCell("Last acknowledgement", relativeDate(model.lastAcknowledgementAt))
+            if model.localArchiveIssueCount > 0 {
+                statusCell("Archive issues", "\(model.localArchiveIssueCount) blocking record(s)")
+            }
+            if model.quarantineCount > 0 {
+                statusCell("Quarantine", quarantineText)
+            }
         }
     }
 
@@ -81,6 +91,20 @@ struct StatusView: View {
 
     private var controls: some View {
         VStack(spacing: 12) {
+            Button("Recover & Retry") {
+                Task { _ = await garmin.recoverAndRetry() }
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(model.recoveryInProgress)
+            .frame(maxWidth: .infinity)
+
+            if let recoveryResult = model.recoveryResult {
+                Text(recoveryText(recoveryResult))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
             Toggle("Store live activity and location", isOn: Binding(
                 get: { model.captureEnabled },
                 set: { garmin.setCaptureEnabled($0) }
@@ -146,10 +170,14 @@ struct StatusView: View {
                 }
                 .buttonStyle(.bordered)
             }
+            if model.quarantineCount > 0 {
+                Button("Retry quarantined envelopes") { garmin.retryQuarantinedEnvelopes() }
+                    .buttonStyle(.bordered)
+            }
             if !model.serverConfigurationStatus.isEmpty {
                 Text(model.serverConfigurationStatus).font(.caption).foregroundStyle(.secondary)
             }
-            Text("Last upload: \(relativeDate(model.lastUploadAt)). Credentials and location are never written to diagnostics.")
+            Text("Last attempt: \(relativeDate(model.lastUploadAt)). Credentials and location are never written to diagnostics.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -202,6 +230,25 @@ struct StatusView: View {
 
     private var abbreviatedRunID: String {
         model.currentRunID.map { String($0.uuidString.prefix(8)) } ?? "None"
+    }
+
+    private var pendingUploadText: String {
+        guard let age = model.oldestPendingAge, model.pendingUploadCount > 0 else {
+            return "\(model.pendingUploadCount)"
+        }
+        return "\(model.pendingUploadCount), oldest \(Int(age))s"
+    }
+
+    private var quarantineText: String {
+        let identifier = model.lastQuarantinedEnvelopeID.map { String($0.uuidString.prefix(8)) } ?? "unknown"
+        let category = model.lastQuarantineCategory ?? "rejected_envelope"
+        return "\(model.quarantineCount), last \(identifier) (\(category))"
+    }
+
+    private func recoveryText(_ result: GarminRecoveryResult) -> String {
+        let capture = result.captureResumed ? "Capture resumed" : "Capture remains paused"
+        let pending = "\(result.pendingEnvelopeCount) pending"
+        return "\(capture). \(pending). Upload: \(result.uploadState.label)."
     }
 
     private func relativeDate(_ date: Date?) -> String {

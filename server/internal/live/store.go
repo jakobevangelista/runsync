@@ -89,6 +89,98 @@ type Route struct {
 	ServerTime     time.Time    `json:"serverTime"`
 }
 
+type Bootstrap struct {
+	Snapshot              Snapshot   `json:"snapshot"`
+	Route                 Route      `json:"route"`
+	ReplayAfterEnvelopeID *uuid.UUID `json:"replayAfterEnvelopeId"`
+}
+
+func (s *Store) Bootstrap(ctx context.Context, requested Channel, now time.Time) (Bootstrap, error) {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return Bootstrap{}, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	out, err := bootstrapTx(ctx, tx, requested, now)
+	if err != nil {
+		return Bootstrap{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Bootstrap{}, err
+	}
+	return out, nil
+}
+
+func bootstrapTx(ctx context.Context, tx pgx.Tx, requested Channel, now time.Time) (Bootstrap, error) {
+	var out Bootstrap
+	var c Channel
+	err := tx.QueryRow(ctx, `SELECT id,user_id,slug,display_name,location_policy,coordinate_decimals,active_activity_id FROM live_channels WHERE user_id=$1 AND slug=$2`, requested.UserID, requested.Slug).Scan(&c.ID, &c.UserID, &c.Slug, &c.DisplayName, &c.Policy, &c.Decimals, &c.ActivityID)
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && c.ID != requested.ID) {
+		return out, ErrNotFound
+	}
+	if err != nil {
+		return out, err
+	}
+	restrictPolicy(&c, requested.Policy, requested.Decimals)
+
+	out.Snapshot = Snapshot{ChannelID: c.ID, Slug: c.Slug, ActivityID: c.ActivityID, Status: "offline", Route: []SampleView{}, ServerTime: now}
+	out.Route = Route{ChannelID: c.ID, ActivityID: c.ActivityID, LocationPolicy: c.Policy, Points: []RoutePoint{}, ServerTime: now}
+	if c.ActivityID == nil {
+		return out, nil
+	}
+
+	var highWater int64
+	var highWaterEnvelope uuid.UUID
+	err = tx.QueryRow(ctx, `SELECT ingest_cursor,envelope_id FROM telemetry_samples WHERE user_id=$1 AND activity_id=$2 ORDER BY ingest_cursor DESC LIMIT 1`, c.UserID, *c.ActivityID).Scan(&highWater, &highWaterEnvelope)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return out, nil
+	}
+	if err != nil {
+		return out, err
+	}
+	out.ReplayAfterEnvelopeID = &highWaterEnvelope
+
+	latest, err := scanView(tx.QueryRow(ctx, `SELECT envelope_id,phone_received_at,server_received_at,protocol_version,watch_sequence,activity_state,garmin_activity_start_epoch_seconds,elapsed_time_milliseconds,distance_decimeters,speed_millimeters_per_second,heart_rate_bpm,cadence_rpm,latitude_microdegrees,longitude_microdegrees,gps_quality,altitude_decimeters,total_ascent_meters FROM telemetry_samples WHERE user_id=$1 AND activity_id=$2 AND ingest_cursor<=$3 ORDER BY phone_received_at DESC,ingest_cursor DESC LIMIT 1`, c.UserID, *c.ActivityID, highWater))
+	if err != nil {
+		return out, err
+	}
+	applyPolicy(&latest, c.Policy, c.Decimals)
+	out.Snapshot.Latest = &latest
+	age := now.Sub(latest.PhoneReceivedAt).Milliseconds()
+	if age < 0 {
+		age = 0
+	}
+	out.Snapshot.LatestSampleAgeMilliseconds = &age
+	out.Snapshot.Status = stateName(latest.State)
+
+	if c.Policy != "hidden" {
+		rows, err := tx.Query(ctx, `SELECT envelope_id,phone_received_at,latitude_microdegrees,longitude_microdegrees,gps_quality FROM telemetry_samples WHERE user_id=$1 AND activity_id=$2 AND ingest_cursor<=$3 AND latitude_microdegrees IS NOT NULL AND longitude_microdegrees IS NOT NULL ORDER BY phone_received_at,envelope_id`, c.UserID, *c.ActivityID, highWater)
+		if err != nil {
+			return out, err
+		}
+		for rows.Next() {
+			var point RoutePoint
+			if err := rows.Scan(&point.EnvelopeID, &point.PhoneReceivedAt, &point.LatitudeMicrodegrees, &point.LongitudeMicrodegrees, &point.GPSQuality); err != nil {
+				rows.Close()
+				return out, err
+			}
+			if c.Policy == "rounded" && c.Decimals != nil {
+				roundValue(&point.LatitudeMicrodegrees, *c.Decimals)
+				roundValue(&point.LongitudeMicrodegrees, *c.Decimals)
+			}
+			out.Route.Points = append(out.Route.Points, point)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return out, err
+		}
+		rows.Close()
+		out.Route.Points = downsample(out.Route.Points, maxRoutePoints)
+	}
+
+	return out, nil
+}
+
 func (s *Store) Snapshot(ctx context.Context, c Channel, now time.Time) (Snapshot, error) {
 	out := Snapshot{ChannelID: c.ID, Slug: c.Slug, ActivityID: c.ActivityID, Status: "offline", Route: []SampleView{}, ServerTime: now}
 	if c.ActivityID == nil {
@@ -108,7 +200,7 @@ func (s *Store) Snapshot(ctx context.Context, c Channel, now time.Time) (Snapsho
 		out.LatestSampleAgeMilliseconds = &age
 		out.Status = stateName(latest.State)
 	}
-	rows, err := s.pool.Query(ctx, `SELECT envelope_id,phone_received_at,server_received_at,protocol_version,watch_sequence,activity_state,garmin_activity_start_epoch_seconds,elapsed_time_milliseconds,distance_decimeters,speed_millimeters_per_second,heart_rate_bpm,cadence_rpm,latitude_microdegrees,longitude_microdegrees,gps_quality,altitude_decimeters,total_ascent_meters FROM telemetry_samples WHERE user_id=$1 AND activity_id=$2 AND phone_received_at >= $3 ORDER BY phone_received_at DESC,ingest_cursor DESC LIMIT 500`, c.UserID, *c.ActivityID, now.Add(-30*time.Minute))
+	rows, err := s.pool.Query(ctx, `SELECT envelope_id,phone_received_at,server_received_at,protocol_version,watch_sequence,activity_state,garmin_activity_start_epoch_seconds,elapsed_time_milliseconds,distance_decimeters,speed_millimeters_per_second,heart_rate_bpm,cadence_rpm,latitude_microdegrees,longitude_microdegrees,gps_quality,altitude_decimeters,total_ascent_meters FROM telemetry_samples WHERE user_id=$1 AND activity_id=$2 AND phone_received_at >= $3 ORDER BY phone_received_at DESC,envelope_id DESC LIMIT 500`, c.UserID, *c.ActivityID, now.Add(-30*time.Minute))
 	if err != nil {
 		return out, err
 	}
@@ -132,7 +224,7 @@ func (s *Store) Route(ctx context.Context, c Channel, now time.Time) (Route, err
 	if c.ActivityID == nil || c.Policy == "hidden" {
 		return out, nil
 	}
-	rows, err := s.pool.Query(ctx, `SELECT envelope_id,phone_received_at,latitude_microdegrees,longitude_microdegrees,gps_quality FROM telemetry_samples WHERE user_id=$1 AND activity_id=$2 AND latitude_microdegrees IS NOT NULL AND longitude_microdegrees IS NOT NULL ORDER BY phone_received_at,ingest_cursor`, c.UserID, *c.ActivityID)
+	rows, err := s.pool.Query(ctx, `SELECT envelope_id,phone_received_at,latitude_microdegrees,longitude_microdegrees,gps_quality FROM telemetry_samples WHERE user_id=$1 AND activity_id=$2 AND latitude_microdegrees IS NOT NULL AND longitude_microdegrees IS NOT NULL ORDER BY phone_received_at,envelope_id`, c.UserID, *c.ActivityID)
 	if err != nil {
 		return out, err
 	}
@@ -234,6 +326,15 @@ func applyPolicy(v *SampleView, policy string, decimals *int16) {
 	} else if policy == "rounded" && decimals != nil {
 		round(&v.LatitudeMicrodegrees, *decimals)
 		round(&v.LongitudeMicrodegrees, *decimals)
+	}
+}
+func restrictPolicy(c *Channel, policy string, decimals *int16) {
+	rank := map[string]int{"hidden": 0, "rounded": 1, "precise": 2}
+	if rank[policy] < rank[c.Policy] {
+		c.Policy = policy
+		c.Decimals = decimals
+	} else if c.Policy == "rounded" && policy == "rounded" && decimals != nil && (c.Decimals == nil || *decimals < *c.Decimals) {
+		c.Decimals = decimals
 	}
 }
 func round(value **int, decimals int16) {

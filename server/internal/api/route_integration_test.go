@@ -82,6 +82,18 @@ func TestRouteHTTPIntegration(t *testing.T) {
 		if response.StatusCode != http.StatusNotFound {
 			t.Fatalf("cross-user request: status=%d", response.StatusCode)
 		}
+		req, err := http.NewRequest(http.MethodGet, server.URL+"/v1/channels/"+fixture.preciseSlug+"/bootstrap", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response, err = server.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer response.Body.Close()
+		if response.StatusCode != http.StatusUnauthorized || response.Header.Get("Cache-Control") != "no-store" {
+			t.Fatalf("bootstrap missing token: status=%d cache=%q", response.StatusCode, response.Header.Get("Cache-Control"))
+		}
 	})
 
 	t.Run("precise service route", func(t *testing.T) {
@@ -110,6 +122,38 @@ func TestRouteHTTPIntegration(t *testing.T) {
 		}
 	})
 
+	t.Run("consistent bootstrap uses ingest high-water separately from latest metrics", func(t *testing.T) {
+		req, err := http.NewRequest(http.MethodGet, server.URL+"/v1/channels/"+fixture.preciseSlug+"/bootstrap", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", "Bearer "+fixture.readToken)
+		response, err := server.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer response.Body.Close()
+		var bootstrap live.Bootstrap
+		if err := json.NewDecoder(response.Body).Decode(&bootstrap); err != nil {
+			t.Fatal(err)
+		}
+		if response.StatusCode != http.StatusOK || response.Header.Get("Cache-Control") != "no-store" {
+			t.Fatalf("status=%d cache=%q", response.StatusCode, response.Header.Get("Cache-Control"))
+		}
+		if bootstrap.Snapshot.ActivityID == nil || *bootstrap.Snapshot.ActivityID != fixture.activity || bootstrap.Route.ActivityID == nil || *bootstrap.Route.ActivityID != fixture.activity {
+			t.Fatalf("bootstrap identities=%#v", bootstrap)
+		}
+		if bootstrap.Snapshot.Latest == nil || bootstrap.Snapshot.Latest.EnvelopeID != fixture.latestEnvelope {
+			t.Fatalf("latest=%#v", bootstrap.Snapshot.Latest)
+		}
+		if bootstrap.ReplayAfterEnvelopeID == nil || *bootstrap.ReplayAfterEnvelopeID != fixture.highWaterEnvelope {
+			t.Fatalf("replay high-water=%v, want %s", bootstrap.ReplayAfterEnvelopeID, fixture.highWaterEnvelope)
+		}
+		if len(bootstrap.Route.Points) != 3 || bootstrap.Route.Points[0].EnvelopeID != fixture.firstEnvelope || bootstrap.Route.Points[1].EnvelopeID != fixture.secondEnvelope || bootstrap.Route.Points[2].EnvelopeID != fixture.latestEnvelope {
+			t.Fatalf("bootstrap route=%#v", bootstrap.Route.Points)
+		}
+	})
+
 	t.Run("viewer policy clamp", func(t *testing.T) {
 		decimals := int16(2)
 		now := time.Now().UTC()
@@ -124,6 +168,23 @@ func TestRouteHTTPIntegration(t *testing.T) {
 		}
 		if route.Points[0].LatitudeMicrodegrees != 37770000 || route.Points[0].LongitudeMicrodegrees != -122420000 {
 			t.Fatalf("clamped coordinates=%#v", route.Points[0])
+		}
+		req, err := http.NewRequest(http.MethodGet, server.URL+"/v1/channels/"+fixture.preciseSlug+"/bootstrap", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		response, err = server.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer response.Body.Close()
+		var bootstrap live.Bootstrap
+		if err := json.NewDecoder(response.Body).Decode(&bootstrap); err != nil {
+			t.Fatal(err)
+		}
+		if response.StatusCode != http.StatusOK || bootstrap.Route.LocationPolicy != "rounded" || len(bootstrap.Route.Points) != 3 || bootstrap.Route.Points[0].LatitudeMicrodegrees != 37770000 {
+			t.Fatalf("viewer bootstrap status=%d bootstrap=%#v", response.StatusCode, bootstrap)
 		}
 	})
 
@@ -190,12 +251,12 @@ func TestRouteHTTPIntegration(t *testing.T) {
 }
 
 type routeFixture struct {
-	user                                                                       uuid.UUID
-	activity                                                                   uuid.UUID
-	preciseChannel                                                             uuid.UUID
-	firstEnvelope, secondEnvelope, latestEnvelope, endedEnvelope               uuid.UUID
-	preciseSlug, roundedSlug, hiddenSlug, emptySlug, unavailableSlug, longSlug string
-	endedSlug, readToken, writeToken, otherToken                               string
+	user                                                                            uuid.UUID
+	activity                                                                        uuid.UUID
+	preciseChannel                                                                  uuid.UUID
+	firstEnvelope, secondEnvelope, latestEnvelope, highWaterEnvelope, endedEnvelope uuid.UUID
+	preciseSlug, roundedSlug, hiddenSlug, emptySlug, unavailableSlug, longSlug      string
+	endedSlug, readToken, writeToken, otherToken                                    string
 }
 
 func newRouteFixture(t *testing.T, pool *pgxpool.Pool) routeFixture {
@@ -204,9 +265,12 @@ func newRouteFixture(t *testing.T, pool *pgxpool.Pool) routeFixture {
 	suffix := uuid.New().String()[:8]
 	f := routeFixture{
 		user: uuid.New(), activity: uuid.New(), preciseChannel: uuid.New(),
-		firstEnvelope: uuid.New(), secondEnvelope: uuid.New(), latestEnvelope: uuid.New(), endedEnvelope: uuid.New(),
+		firstEnvelope: uuid.New(), secondEnvelope: uuid.New(), latestEnvelope: uuid.New(), highWaterEnvelope: uuid.New(), endedEnvelope: uuid.New(),
 		preciseSlug: "precise-" + suffix, roundedSlug: "rounded-" + suffix, hiddenSlug: "hidden-" + suffix,
 		emptySlug: "empty-" + suffix, unavailableSlug: "unavailable-" + suffix, longSlug: "long-" + suffix, endedSlug: "ended-" + suffix,
+	}
+	if f.firstEnvelope.String() > f.secondEnvelope.String() {
+		f.firstEnvelope, f.secondEnvelope = f.secondEnvelope, f.firstEnvelope
 	}
 	otherUser := uuid.New()
 	installation, device := uuid.New(), uuid.New()
@@ -264,6 +328,7 @@ func newRouteFixture(t *testing.T, pool *pgxpool.Pool) routeFixture {
 	insertSample(f.latestEnvelope, f.activity, 3, tiedAt.Add(time.Second), 4, &lat3, &lon3)
 	insertSample(uuid.New(), unavailableActivity, 4, tiedAt, 1, nil, nil)
 	insertSample(f.endedEnvelope, endedActivity, 5, now.Add(-time.Hour), 4, &lat3, &lon3)
+	insertSample(f.highWaterEnvelope, f.activity, 6, tiedAt.Add(-time.Minute), 1, nil, nil)
 	mustExec(`UPDATE activities SET current_state=4,last_phone_received_at=$2,latest_ingest_cursor=5,ended_at=$2 WHERE id=$1`, endedActivity, now.Add(-time.Hour))
 	mustExec(`INSERT INTO telemetry_samples(envelope_id,activity_id,user_id,phone_received_at,server_received_at,ingest_cursor,app_version,protocol_version,watch_sequence,activity_state,latitude_microdegrees,longitude_microdegrees,gps_quality)
 		SELECT md5($1::text || ':' || g::text)::uuid,$2,$3,$4::timestamptz + g * interval '1 second',$5,100 + g,'test',1,g,1,10000000 + g,20000000 + g,3 FROM generate_series(1,5001) AS g`, longActivity, longActivity, f.user, now.Add(-4*time.Hour), now)

@@ -3,7 +3,6 @@ package ingest
 import (
 	"context"
 	"errors"
-	"fmt"
 	"sort"
 	"time"
 
@@ -14,8 +13,42 @@ import (
 	"github.com/jakobevangelista/runsync/server/internal/telemetry"
 )
 
-var ErrConflict = errors.New("envelope conflict")
-var ErrOwnership = errors.New("resource ownership conflict")
+var (
+	ErrConflict              = errors.New("envelope conflict")
+	ErrInstallationOwnership = errors.New("installation ownership conflict")
+	ErrEnvelopeOwnership     = errors.New("envelope ownership conflict")
+)
+
+type RejectionCode string
+
+const (
+	CodeEnvelopeConflict              RejectionCode = "envelope_conflict"
+	CodeInstallationOwnershipConflict RejectionCode = "installation_ownership_conflict"
+	CodeEnvelopeOwnershipConflict     RejectionCode = "envelope_ownership_conflict"
+)
+
+type RejectionError struct {
+	Code       RejectionCode
+	EnvelopeID *uuid.UUID
+	kind       error
+}
+
+func (e *RejectionError) Error() string {
+	if e.kind == nil {
+		return string(e.Code)
+	}
+	return e.kind.Error()
+}
+func (e *RejectionError) Unwrap() error { return e.kind }
+
+func rejection(kind error, code RejectionCode, envelopeID *uuid.UUID) error {
+	return &RejectionError{Code: code, EnvelopeID: envelopeID, kind: kind}
+}
+
+func envelopeRejection(kind error, code RejectionCode, envelopeID uuid.UUID) error {
+	id := envelopeID
+	return rejection(kind, code, &id)
+}
 
 type Result struct {
 	Acknowledged []uuid.UUID
@@ -40,22 +73,28 @@ func (s *Store) Ingest(ctx context.Context, p auth.Principal, b telemetry.Batch,
 		return result, err
 	}
 	if p.InstallationID != nil && *p.InstallationID != b.InstallationID {
-		return result, ErrOwnership
+		return result, rejection(ErrInstallationOwnership, CodeInstallationOwnershipConflict, nil)
 	}
 	var installationUser uuid.UUID
 	err = tx.QueryRow(ctx, `INSERT INTO installations(id,user_id,first_seen_at,last_seen_at,app_version) VALUES($1,$2,$3,$3,$4) ON CONFLICT(id) DO UPDATE SET last_seen_at=GREATEST(installations.last_seen_at,excluded.last_seen_at),app_version=excluded.app_version RETURNING user_id`, b.InstallationID, p.UserID, now, b.Envelopes[len(b.Envelopes)-1].AppVersion).Scan(&installationUser)
-	if err != nil || installationUser != p.UserID {
-		return result, ErrOwnership
+	if err != nil {
+		return result, err
+	}
+	if installationUser != p.UserID {
+		return result, rejection(ErrInstallationOwnership, CodeInstallationOwnershipConflict, nil)
 	}
 	if p.InstallationID == nil {
 		tag, err := tx.Exec(ctx, `UPDATE api_credentials SET installation_id=$1 WHERE id=$2 AND installation_id IS NULL`, b.InstallationID, p.CredentialID)
 		if err != nil {
-			return result, ErrOwnership
+			return result, err
 		}
 		if tag.RowsAffected() == 0 {
 			var bound uuid.UUID
-			if err := tx.QueryRow(ctx, `SELECT installation_id FROM api_credentials WHERE id=$1`, p.CredentialID).Scan(&bound); err != nil || bound != b.InstallationID {
-				return result, ErrOwnership
+			if err := tx.QueryRow(ctx, `SELECT installation_id FROM api_credentials WHERE id=$1`, p.CredentialID).Scan(&bound); err != nil {
+				return result, err
+			}
+			if bound != b.InstallationID {
+				return result, rejection(ErrInstallationOwnership, CodeInstallationOwnershipConflict, nil)
 			}
 		}
 	}
@@ -63,14 +102,20 @@ func (s *Store) Ingest(ctx context.Context, p auth.Principal, b telemetry.Batch,
 	for _, e := range b.Envelopes {
 		var deviceID, user uuid.UUID
 		err = tx.QueryRow(ctx, `INSERT INTO garmin_devices(id,user_id,garmin_identifier,first_seen_at,last_seen_at) VALUES($1,$2,$3,$4,$4) ON CONFLICT(user_id,garmin_identifier) DO UPDATE SET last_seen_at=GREATEST(garmin_devices.last_seen_at,excluded.last_seen_at) RETURNING id,user_id`, uuid.New(), p.UserID, e.GarminDeviceIdentifier, now).Scan(&deviceID, &user)
-		if err != nil || user != p.UserID {
-			return result, ErrOwnership
+		if err != nil {
+			return result, err
+		}
+		if user != p.UserID {
+			return result, envelopeRejection(ErrEnvelopeOwnership, CodeEnvelopeOwnershipConflict, e.EnvelopeID)
 		}
 		var activityUser, activityInstallation, activityDevice uuid.UUID
 		started := epoch(e.Sample.ActivityStartEpochSeconds)
 		err = tx.QueryRow(ctx, `INSERT INTO activities(id,user_id,installation_id,garmin_device_id,garmin_started_at,first_phone_received_at,last_phone_received_at,first_server_received_at,last_server_received_at,current_state,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$6,$7,$7,$8,$7,$7) ON CONFLICT(id) DO UPDATE SET updated_at=activities.updated_at RETURNING user_id,installation_id,garmin_device_id`, e.ActivityID, p.UserID, b.InstallationID, deviceID, started, e.PhoneReceivedAt, now, e.Sample.State).Scan(&activityUser, &activityInstallation, &activityDevice)
-		if err != nil || activityUser != p.UserID || activityInstallation != b.InstallationID || activityDevice != deviceID {
-			return result, ErrOwnership
+		if err != nil {
+			return result, err
+		}
+		if activityUser != p.UserID || activityInstallation != b.InstallationID || activityDevice != deviceID {
+			return result, envelopeRejection(ErrEnvelopeOwnership, CodeEnvelopeOwnershipConflict, e.EnvelopeID)
 		}
 		inserted, cursor, err := insertSample(ctx, tx, p.UserID, e, now)
 		if err != nil {
@@ -171,13 +216,16 @@ func insertSample(ctx context.Context, tx pgx.Tx, user uuid.UUID, e telemetry.En
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return false, 0, err
 	}
-	var equal bool
-	err = tx.QueryRow(ctx, `SELECT activity_id=$2 AND user_id=$3 AND phone_received_at=$4 AND app_version=$5 AND protocol_version=$6 AND watch_sequence=$7 AND activity_state=$8 AND garmin_activity_start_epoch_seconds IS NOT DISTINCT FROM $9 AND elapsed_time_milliseconds IS NOT DISTINCT FROM $10 AND distance_decimeters IS NOT DISTINCT FROM $11 AND speed_millimeters_per_second IS NOT DISTINCT FROM $12 AND heart_rate_bpm IS NOT DISTINCT FROM $13 AND cadence_rpm IS NOT DISTINCT FROM $14 AND latitude_microdegrees IS NOT DISTINCT FROM $15 AND longitude_microdegrees IS NOT DISTINCT FROM $16 AND gps_quality IS NOT DISTINCT FROM $17 AND altitude_decimeters IS NOT DISTINCT FROM $18 AND total_ascent_meters IS NOT DISTINCT FROM $19 FROM telemetry_samples WHERE envelope_id=$1`, e.EnvelopeID, e.ActivityID, user, e.PhoneReceivedAt, e.AppVersion, s.ProtocolVersion, s.Sequence, s.State, s.ActivityStartEpochSeconds, s.ElapsedTimeMilliseconds, s.DistanceDecimeters, s.SpeedMillimetersPerSecond, s.HeartRateBPM, s.CadenceRPM, s.LatitudeMicrodegrees, s.LongitudeMicrodegrees, s.GPSQuality, s.AltitudeDecimeters, s.TotalAscentMeters).Scan(&equal)
+	var owned, equal bool
+	err = tx.QueryRow(ctx, `SELECT user_id=$3,activity_id=$2 AND user_id=$3 AND phone_received_at=$4 AND app_version=$5 AND protocol_version=$6 AND watch_sequence=$7 AND activity_state=$8 AND garmin_activity_start_epoch_seconds IS NOT DISTINCT FROM $9 AND elapsed_time_milliseconds IS NOT DISTINCT FROM $10 AND distance_decimeters IS NOT DISTINCT FROM $11 AND speed_millimeters_per_second IS NOT DISTINCT FROM $12 AND heart_rate_bpm IS NOT DISTINCT FROM $13 AND cadence_rpm IS NOT DISTINCT FROM $14 AND latitude_microdegrees IS NOT DISTINCT FROM $15 AND longitude_microdegrees IS NOT DISTINCT FROM $16 AND gps_quality IS NOT DISTINCT FROM $17 AND altitude_decimeters IS NOT DISTINCT FROM $18 AND total_ascent_meters IS NOT DISTINCT FROM $19 FROM telemetry_samples WHERE envelope_id=$1`, e.EnvelopeID, e.ActivityID, user, e.PhoneReceivedAt, e.AppVersion, s.ProtocolVersion, s.Sequence, s.State, s.ActivityStartEpochSeconds, s.ElapsedTimeMilliseconds, s.DistanceDecimeters, s.SpeedMillimetersPerSecond, s.HeartRateBPM, s.CadenceRPM, s.LatitudeMicrodegrees, s.LongitudeMicrodegrees, s.GPSQuality, s.AltitudeDecimeters, s.TotalAscentMeters).Scan(&owned, &equal)
 	if err != nil {
 		return false, 0, err
 	}
+	if !owned {
+		return false, 0, envelopeRejection(ErrEnvelopeOwnership, CodeEnvelopeOwnershipConflict, e.EnvelopeID)
+	}
 	if !equal {
-		return false, 0, fmt.Errorf("%w: %s", ErrConflict, e.EnvelopeID)
+		return false, 0, envelopeRejection(ErrConflict, CodeEnvelopeConflict, e.EnvelopeID)
 	}
 	return false, 0, nil
 }

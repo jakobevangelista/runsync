@@ -10,16 +10,19 @@
 		0AF1D89A0D7E3C543275D354 /* TelemetrySink.swift in Sources */ = {isa = PBXBuildFile; fileRef = B27E3C930E99696849A24162 /* TelemetrySink.swift */; };
 		1E64194CAFD9EA9F65DAD6BD /* TelemetryArchiveTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DDACF9883A96C5238EF974CE /* TelemetryArchiveTests.swift */; };
 		1F7DCF7A8AE629B0A304926B /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1F7C16FC662B17DA44A2241 /* AppModel.swift */; };
+		22DF6FB35E105162C3C254A8 /* BackgroundTelemetryUploadManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6309C1DFCEDCFDE0CD5A31DF /* BackgroundTelemetryUploadManager.swift */; };
 		29601363205BBD5317B9160B /* ConnectIQ in Frameworks */ = {isa = PBXBuildFile; productRef = 6275F4FC155E44927AB807F6 /* ConnectIQ */; };
 		39EAF7C23823076169929CD3 /* ServerConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 760A9DCC88AFB1BD6F9EBC15 /* ServerConfiguration.swift */; };
 		3ED7FD87CAE1A104B6F4181B /* GarminConnectionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADD9CEBB555713390DD0DF63 /* GarminConnectionService.swift */; };
 		4214EFC15F1698478C59CF7D /* MockTelemetrySinkTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB5439443815AD6436343AB9 /* MockTelemetrySinkTests.swift */; };
+		437932694EA74662D402BF45 /* BackgroundTelemetryUploadTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6DC1A51370E37EFF1F677CC8 /* BackgroundTelemetryUploadTests.swift */; };
 		49CC12AEAF599BB6FC579FC0 /* GarminReceiptPipelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EBCD6CF929D5B927BD60E7FE /* GarminReceiptPipelineTests.swift */; };
 		4CE4D02BB4383883C8E6B8B9 /* StatusView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99CF785E4751D95A8981A723 /* StatusView.swift */; };
 		5D969DB3FB39B4560CFDE8BA /* TelemetryArchive.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9E0016F04D6708B68AACFE7 /* TelemetryArchive.swift */; };
 		60887EF05F7A9831A7F129B0 /* TelemetryIngestor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 954C63E8F41FA6F870DB2178 /* TelemetryIngestor.swift */; };
 		641916E163140E61F677E5A5 /* RunSyncApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD872DFDF9B70E4A4D2870D6 /* RunSyncApp.swift */; };
 		6BADDA6274EB19D9C40BF20E /* GarminReceiptPipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD602388110FFA3451A69AA7 /* GarminReceiptPipeline.swift */; };
+		7A514C97E6C418AF345AC63D /* TelemetryUploadControl.swift in Sources */ = {isa = PBXBuildFile; fileRef = C239FC815E4CADCE518F71B4 /* TelemetryUploadControl.swift */; };
 		7DBFAEE1CFA2F89C648E2513 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA63DC20F4050F9835C6F770 /* AppDelegate.swift */; };
 		85E986DF8A005E7584D728F4 /* ServerConfigurationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C00723770AB52C6E844CAF4 /* ServerConfigurationTests.swift */; };
 		8F0EE43472935F000116F216 /* CaptureSettingsStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0BDBFF79482D12F322EA19FA /* CaptureSettingsStoreTests.swift */; };
@@ -36,6 +39,7 @@
 		C7806B98A198E242EA114B28 /* ActivitySessionAssemblerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5A42A5864A821BD3015A1F5 /* ActivitySessionAssemblerTests.swift */; };
 		DAF84C623517B6962F3CA597 /* CaptureSettingsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C1A966FFE020B2B764E7BE9 /* CaptureSettingsStore.swift */; };
 		E5032E35A636B2DF60DD5D57 /* GarminMessageDecoderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E4C6837D1633457EAAFE10F6 /* GarminMessageDecoderTests.swift */; };
+		E7DCD739EFA44CF530AE8F62 /* TelemetryBatchCodec.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0E55CCDEB4DAA9CC0FD78C9 /* TelemetryBatchCodec.swift */; };
 		EFEA4EE5A5871ED009CB4BD6 /* HTTPTelemetrySinkTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A46C421913A903DB72827D6 /* HTTPTelemetrySinkTests.swift */; };
 		FDC8EA32330095E2B8FFE979 /* ActivitySessionAssembler.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFDCF58ADDD9BD7A1D09F541 /* ActivitySessionAssembler.swift */; };
 /* End PBXBuildFile section */
@@ -58,12 +62,15 @@
 		4A46C421913A903DB72827D6 /* HTTPTelemetrySinkTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HTTPTelemetrySinkTests.swift; sourceTree = "<group>"; };
 		5BAC5B3553FDF557FF5C2B75 /* RunSyncTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = RunSyncTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		5D93A8262578C64B96DD0087 /* RunSyncConstants.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunSyncConstants.swift; sourceTree = "<group>"; };
+		6309C1DFCEDCFDE0CD5A31DF /* BackgroundTelemetryUploadManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundTelemetryUploadManager.swift; sourceTree = "<group>"; };
 		6681F488A9A55EFD4DC0868A /* RunSync.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = RunSync.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		6DC1A51370E37EFF1F677CC8 /* BackgroundTelemetryUploadTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundTelemetryUploadTests.swift; sourceTree = "<group>"; };
 		712F06BB54EE1C132BD5A492 /* TelemetryTestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TelemetryTestSupport.swift; sourceTree = "<group>"; };
 		760A9DCC88AFB1BD6F9EBC15 /* ServerConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerConfiguration.swift; sourceTree = "<group>"; };
 		8C198DC4EF86C084138C8050 /* MockTelemetrySink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockTelemetrySink.swift; sourceTree = "<group>"; };
 		954C63E8F41FA6F870DB2178 /* TelemetryIngestor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TelemetryIngestor.swift; sourceTree = "<group>"; };
 		99CF785E4751D95A8981A723 /* StatusView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusView.swift; sourceTree = "<group>"; };
+		A0E55CCDEB4DAA9CC0FD78C9 /* TelemetryBatchCodec.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TelemetryBatchCodec.swift; sourceTree = "<group>"; };
 		A7C199942795BA80101E373C /* GarminMessageDecoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GarminMessageDecoder.swift; sourceTree = "<group>"; };
 		AD872DFDF9B70E4A4D2870D6 /* RunSyncApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunSyncApp.swift; sourceTree = "<group>"; };
 		ADD9CEBB555713390DD0DF63 /* GarminConnectionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GarminConnectionService.swift; sourceTree = "<group>"; };
@@ -72,6 +79,7 @@
 		B7BFB512E13F88ADBD797A06 /* AppContainer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppContainer.swift; sourceTree = "<group>"; };
 		BD602388110FFA3451A69AA7 /* GarminReceiptPipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GarminReceiptPipeline.swift; sourceTree = "<group>"; };
 		C1F7C16FC662B17DA44A2241 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
+		C239FC815E4CADCE518F71B4 /* TelemetryUploadControl.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TelemetryUploadControl.swift; sourceTree = "<group>"; };
 		CA63DC20F4050F9835C6F770 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		CFDCF58ADDD9BD7A1D09F541 /* ActivitySessionAssembler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivitySessionAssembler.swift; sourceTree = "<group>"; };
 		D9E0016F04D6708B68AACFE7 /* TelemetryArchive.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TelemetryArchive.swift; sourceTree = "<group>"; };
@@ -122,6 +130,7 @@
 			children = (
 				E8ABF818A8F4F91B856FD9CE /* InstallationIdentity.swift */,
 				D9E0016F04D6708B68AACFE7 /* TelemetryArchive.swift */,
+				C239FC815E4CADCE518F71B4 /* TelemetryUploadControl.swift */,
 			);
 			path = Storage;
 			sourceTree = "<group>";
@@ -153,8 +162,10 @@
 		796D656A878AE536208730DA /* Server */ = {
 			isa = PBXGroup;
 			children = (
+				6309C1DFCEDCFDE0CD5A31DF /* BackgroundTelemetryUploadManager.swift */,
 				1556D2AC2DBEA7157C82EB23 /* HTTPTelemetrySink.swift */,
 				760A9DCC88AFB1BD6F9EBC15 /* ServerConfiguration.swift */,
+				A0E55CCDEB4DAA9CC0FD78C9 /* TelemetryBatchCodec.swift */,
 			);
 			path = Server;
 			sourceTree = "<group>";
@@ -192,6 +203,7 @@
 			isa = PBXGroup;
 			children = (
 				B5A42A5864A821BD3015A1F5 /* ActivitySessionAssemblerTests.swift */,
+				6DC1A51370E37EFF1F677CC8 /* BackgroundTelemetryUploadTests.swift */,
 				0BDBFF79482D12F322EA19FA /* CaptureSettingsStoreTests.swift */,
 				E4C6837D1633457EAAFE10F6 /* GarminMessageDecoderTests.swift */,
 				EBCD6CF929D5B927BD60E7FE /* GarminReceiptPipelineTests.swift */,
@@ -304,6 +316,7 @@
 				94CD03F488428A420266DAA3 /* AppContainer.swift in Sources */,
 				7DBFAEE1CFA2F89C648E2513 /* AppDelegate.swift in Sources */,
 				1F7DCF7A8AE629B0A304926B /* AppModel.swift in Sources */,
+				22DF6FB35E105162C3C254A8 /* BackgroundTelemetryUploadManager.swift in Sources */,
 				DAF84C623517B6962F3CA597 /* CaptureSettingsStore.swift in Sources */,
 				3ED7FD87CAE1A104B6F4181B /* GarminConnectionService.swift in Sources */,
 				A10A139349DB0494692341AB /* GarminDeviceStore.swift in Sources */,
@@ -317,9 +330,11 @@
 				39EAF7C23823076169929CD3 /* ServerConfiguration.swift in Sources */,
 				4CE4D02BB4383883C8E6B8B9 /* StatusView.swift in Sources */,
 				5D969DB3FB39B4560CFDE8BA /* TelemetryArchive.swift in Sources */,
+				E7DCD739EFA44CF530AE8F62 /* TelemetryBatchCodec.swift in Sources */,
 				60887EF05F7A9831A7F129B0 /* TelemetryIngestor.swift in Sources */,
 				BDA5C5714CA5051AD96B7CFF /* TelemetryModels.swift in Sources */,
 				0AF1D89A0D7E3C543275D354 /* TelemetrySink.swift in Sources */,
+				7A514C97E6C418AF345AC63D /* TelemetryUploadControl.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -328,6 +343,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				C7806B98A198E242EA114B28 /* ActivitySessionAssemblerTests.swift in Sources */,
+				437932694EA74662D402BF45 /* BackgroundTelemetryUploadTests.swift in Sources */,
 				8F0EE43472935F000116F216 /* CaptureSettingsStoreTests.swift in Sources */,
 				E5032E35A636B2DF60DD5D57 /* GarminMessageDecoderTests.swift in Sources */,
 				49CC12AEAF599BB6FC579FC0 /* GarminReceiptPipelineTests.swift in Sources */,

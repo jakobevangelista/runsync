@@ -49,10 +49,8 @@ export function activityReducer(state: ActivityState, action: ActivityAction): A
     const { snapshot, route } = action.session;
     const activityChanged = snapshot.activityId !== state.activityId;
     const base = activityChanged ? initialActivityState : state;
-    const bootstrappedRoute = dedupeRoute(
-      activityChanged ? route.points : [...base.route, ...route.points],
-    );
-    const seen = new Set(base.seenEnvelopeIds);
+    const bootstrappedRoute = dedupeRoute(route.points);
+    const seen = new Set<string>();
     for (const point of bootstrappedRoute) seen.add(point.envelopeId);
     if (snapshot.latest) seen.add(snapshot.latest.envelopeId);
     const withSnapshot = applyLatest(
@@ -216,6 +214,7 @@ export function bootstrapState(
       apiPublicUrl: "http://localhost",
       channelSlug: snapshot.slug,
       mapboxAccessToken: "",
+      replayAfterEnvelopeId: null,
       snapshot,
       route,
     },
