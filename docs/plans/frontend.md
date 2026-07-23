@@ -4,12 +4,12 @@
 
 Build a small TanStack Start application that presents the current RunSync activity as broadcast-ready browser sources for OBS or another streaming platform.
 
-The first version has two jobs:
+The first version began with two jobs:
 
 - render low-latency, composable overlays for the route map and live metrics;
 - provide a normal browser preview page for checking connection state and generating OBS URLs.
 
-The application runs in the homelab as a Docker service and is exposed through the existing Cloudflare Tunnel and Caddy boundary. It consumes the Go API's snapshot, short-lived viewer-token, and Server-Sent Events contracts. The permanent RunSync read credential remains server-side.
+It now also provides a small public landing page and a family-facing current-run page that retains the completed route. The application runs in the homelab as a Docker service and is exposed through the existing Cloudflare Tunnel and Caddy boundary. It consumes the Go API's snapshot, short-lived viewer-token, and Server-Sent Events contracts. The permanent RunSync read credential remains server-side.
 
 The first version is intentionally not a general fitness dashboard, account system, or historical analytics application.
 
@@ -45,20 +45,22 @@ The following decisions are fixed for the first implementation:
 
 ### 3.1 Public routes
 
-Use one deployment-configured overlay UUID, for example `7a85db43-30ba-4de7-bb5e-7f2038937538`.
+Use deployment-configured public identifiers for the family share, browser-source embeds, and broadcast studio. They may fall back to one legacy overlay UUID during migration.
 
 ```text
-/live/<overlayId>/preview
-/live/<overlayId>/map
-/live/<overlayId>/metrics
-/live/<overlayId>/metric/pace
-/live/<overlayId>/metric/heart-rate
-/live/<overlayId>/metric/distance
+/
+/share/<shareId>
+/studio/<overlayId>
+/embed/<embedId>/map
+/embed/<embedId>/metrics
+/embed/<embedId>/metric/pace
+/embed/<embedId>/metric/heart-rate
+/embed/<embedId>/metric/distance
 ```
 
-Unknown overlay IDs return a plain 404 and must not reveal the configured ID, channel slug, API hostname, or credential state.
+Legacy `/live/<overlayId>/...` routes remain available for existing OBS sources and bookmarks. Unknown public IDs return a plain 404 and must not reveal configured IDs, the channel slug, API hostname, or credential state.
 
-The UUID route is public. Anyone who learns it can view the same information shown on stream. It must not be described as a secret or as strong authorization.
+The UUID routes are public. Anyone who learns one can view the corresponding live output. They must not be described as secrets or as strong authorization.
 
 ### 3.2 Preview page
 
@@ -365,6 +367,8 @@ RUNSYNC_API_PUBLIC_URL=https://runsync-api.example.com
 RUNSYNC_API_READ_TOKEN_FILE=/run/secrets/runsync_web_read_token
 RUNSYNC_CHANNEL_SLUG=live
 RUNSYNC_OVERLAY_ID=<random UUID>
+RUNSYNC_SHARE_ID=<different random UUID>
+RUNSYNC_EMBED_ID=<different random UUID>
 RUNSYNC_DEFAULT_UNITS=imperial
 RUNSYNC_DEFAULT_PACE=rolling
 MAPBOX_ACCESS_TOKEN=<public pk token>
@@ -719,7 +723,7 @@ The frontend MVP is complete when:
 - heart-rate zones and user physiology settings;
 - cadence-specific overlay;
 - theme customization;
-- public share-link management UI;
+- public share-link management UI beyond the deployment-configured single share;
 - self-hosted MapLibre/PMTiles migration;
 - terrain, 3D buildings, camera bearing, and route replay animation;
 - service worker/offline asset caching;

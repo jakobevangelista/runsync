@@ -5,11 +5,11 @@ import { MapPanel } from "./MapPanel";
 import { MetricsPanel } from "./Metrics";
 
 export function Preview({
-  overlayId,
+  embedId,
   defaultUnits,
   defaultPace,
 }: {
-  overlayId: string;
+  embedId: string;
   defaultUnits: Units;
   defaultPace: PaceMode;
 }) {
@@ -19,7 +19,7 @@ export function Preview({
   const [origin, setOrigin] = useState("");
   useEffect(() => setOrigin(window.location.origin), []);
   const query = `units=${units}&pace=${pace}`;
-  const base = `${origin}/live/${overlayId}`;
+  const base = `${origin}/embed/${embedId}`;
   const links: Array<[string, string, string]> = [
     ["Map", `${base}/map?${query}`, "1280 × 720"],
     ["Metrics panel", `${base}/metrics?${query}`, "920 × 360"],

@@ -10,22 +10,45 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as StudioStudioIdRouteImport } from './routes/studio.$studioId'
+import { Route as ShareShareIdRouteImport } from './routes/share.$shareId'
 import { Route as LiveOverlayIdRouteImport } from './routes/live.$overlayId'
+import { Route as EmbedEmbedIdRouteImport } from './routes/embed.$embedId'
 import { Route as ApiHealthRouteImport } from './routes/api.health'
 import { Route as LiveOverlayIdPreviewRouteImport } from './routes/live.$overlayId.preview'
 import { Route as LiveOverlayIdMetricsRouteImport } from './routes/live.$overlayId.metrics'
 import { Route as LiveOverlayIdMapRouteImport } from './routes/live.$overlayId.map'
+import { Route as EmbedEmbedIdMetricsRouteImport } from './routes/embed.$embedId.metrics'
+import { Route as EmbedEmbedIdMapRouteImport } from './routes/embed.$embedId.map'
 import { Route as LiveOverlayIdMetricMetricRouteImport } from './routes/live.$overlayId.metric.$metric'
+import { Route as EmbedEmbedIdMetricMetricRouteImport } from './routes/embed.$embedId.metric.$metric'
+import { Route as ApiShareShareIdSessionRouteImport } from './routes/api.share.$shareId.session'
 import { Route as ApiLiveOverlayIdSessionRouteImport } from './routes/api.live.$overlayId.session'
+import { Route as ApiEmbedEmbedIdSessionRouteImport } from './routes/api.embed.$embedId.session'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const StudioStudioIdRoute = StudioStudioIdRouteImport.update({
+  id: '/studio/$studioId',
+  path: '/studio/$studioId',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ShareShareIdRoute = ShareShareIdRouteImport.update({
+  id: '/share/$shareId',
+  path: '/share/$shareId',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const LiveOverlayIdRoute = LiveOverlayIdRouteImport.update({
   id: '/live/$overlayId',
   path: '/live/$overlayId',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const EmbedEmbedIdRoute = EmbedEmbedIdRouteImport.update({
+  id: '/embed/$embedId',
+  path: '/embed/$embedId',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiHealthRoute = ApiHealthRouteImport.update({
@@ -48,47 +71,97 @@ const LiveOverlayIdMapRoute = LiveOverlayIdMapRouteImport.update({
   path: '/map',
   getParentRoute: () => LiveOverlayIdRoute,
 } as any)
+const EmbedEmbedIdMetricsRoute = EmbedEmbedIdMetricsRouteImport.update({
+  id: '/metrics',
+  path: '/metrics',
+  getParentRoute: () => EmbedEmbedIdRoute,
+} as any)
+const EmbedEmbedIdMapRoute = EmbedEmbedIdMapRouteImport.update({
+  id: '/map',
+  path: '/map',
+  getParentRoute: () => EmbedEmbedIdRoute,
+} as any)
 const LiveOverlayIdMetricMetricRoute =
   LiveOverlayIdMetricMetricRouteImport.update({
     id: '/metric/$metric',
     path: '/metric/$metric',
     getParentRoute: () => LiveOverlayIdRoute,
   } as any)
+const EmbedEmbedIdMetricMetricRoute =
+  EmbedEmbedIdMetricMetricRouteImport.update({
+    id: '/metric/$metric',
+    path: '/metric/$metric',
+    getParentRoute: () => EmbedEmbedIdRoute,
+  } as any)
+const ApiShareShareIdSessionRoute = ApiShareShareIdSessionRouteImport.update({
+  id: '/api/share/$shareId/session',
+  path: '/api/share/$shareId/session',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiLiveOverlayIdSessionRoute = ApiLiveOverlayIdSessionRouteImport.update({
   id: '/api/live/$overlayId/session',
   path: '/api/live/$overlayId/session',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiEmbedEmbedIdSessionRoute = ApiEmbedEmbedIdSessionRouteImport.update({
+  id: '/api/embed/$embedId/session',
+  path: '/api/embed/$embedId/session',
   getParentRoute: () => rootRouteImport,
 } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/api/health': typeof ApiHealthRoute
+  '/embed/$embedId': typeof EmbedEmbedIdRouteWithChildren
   '/live/$overlayId': typeof LiveOverlayIdRouteWithChildren
+  '/share/$shareId': typeof ShareShareIdRoute
+  '/studio/$studioId': typeof StudioStudioIdRoute
+  '/embed/$embedId/map': typeof EmbedEmbedIdMapRoute
+  '/embed/$embedId/metrics': typeof EmbedEmbedIdMetricsRoute
   '/live/$overlayId/map': typeof LiveOverlayIdMapRoute
   '/live/$overlayId/metrics': typeof LiveOverlayIdMetricsRoute
   '/live/$overlayId/preview': typeof LiveOverlayIdPreviewRoute
+  '/api/embed/$embedId/session': typeof ApiEmbedEmbedIdSessionRoute
   '/api/live/$overlayId/session': typeof ApiLiveOverlayIdSessionRoute
+  '/api/share/$shareId/session': typeof ApiShareShareIdSessionRoute
+  '/embed/$embedId/metric/$metric': typeof EmbedEmbedIdMetricMetricRoute
   '/live/$overlayId/metric/$metric': typeof LiveOverlayIdMetricMetricRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/api/health': typeof ApiHealthRoute
+  '/embed/$embedId': typeof EmbedEmbedIdRouteWithChildren
   '/live/$overlayId': typeof LiveOverlayIdRouteWithChildren
+  '/share/$shareId': typeof ShareShareIdRoute
+  '/studio/$studioId': typeof StudioStudioIdRoute
+  '/embed/$embedId/map': typeof EmbedEmbedIdMapRoute
+  '/embed/$embedId/metrics': typeof EmbedEmbedIdMetricsRoute
   '/live/$overlayId/map': typeof LiveOverlayIdMapRoute
   '/live/$overlayId/metrics': typeof LiveOverlayIdMetricsRoute
   '/live/$overlayId/preview': typeof LiveOverlayIdPreviewRoute
+  '/api/embed/$embedId/session': typeof ApiEmbedEmbedIdSessionRoute
   '/api/live/$overlayId/session': typeof ApiLiveOverlayIdSessionRoute
+  '/api/share/$shareId/session': typeof ApiShareShareIdSessionRoute
+  '/embed/$embedId/metric/$metric': typeof EmbedEmbedIdMetricMetricRoute
   '/live/$overlayId/metric/$metric': typeof LiveOverlayIdMetricMetricRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/api/health': typeof ApiHealthRoute
+  '/embed/$embedId': typeof EmbedEmbedIdRouteWithChildren
   '/live/$overlayId': typeof LiveOverlayIdRouteWithChildren
+  '/share/$shareId': typeof ShareShareIdRoute
+  '/studio/$studioId': typeof StudioStudioIdRoute
+  '/embed/$embedId/map': typeof EmbedEmbedIdMapRoute
+  '/embed/$embedId/metrics': typeof EmbedEmbedIdMetricsRoute
   '/live/$overlayId/map': typeof LiveOverlayIdMapRoute
   '/live/$overlayId/metrics': typeof LiveOverlayIdMetricsRoute
   '/live/$overlayId/preview': typeof LiveOverlayIdPreviewRoute
+  '/api/embed/$embedId/session': typeof ApiEmbedEmbedIdSessionRoute
   '/api/live/$overlayId/session': typeof ApiLiveOverlayIdSessionRoute
+  '/api/share/$shareId/session': typeof ApiShareShareIdSessionRoute
+  '/embed/$embedId/metric/$metric': typeof EmbedEmbedIdMetricMetricRoute
   '/live/$overlayId/metric/$metric': typeof LiveOverlayIdMetricMetricRoute
 }
 export interface FileRouteTypes {
@@ -96,39 +169,68 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/api/health'
+    | '/embed/$embedId'
     | '/live/$overlayId'
+    | '/share/$shareId'
+    | '/studio/$studioId'
+    | '/embed/$embedId/map'
+    | '/embed/$embedId/metrics'
     | '/live/$overlayId/map'
     | '/live/$overlayId/metrics'
     | '/live/$overlayId/preview'
+    | '/api/embed/$embedId/session'
     | '/api/live/$overlayId/session'
+    | '/api/share/$shareId/session'
+    | '/embed/$embedId/metric/$metric'
     | '/live/$overlayId/metric/$metric'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
     | '/api/health'
+    | '/embed/$embedId'
     | '/live/$overlayId'
+    | '/share/$shareId'
+    | '/studio/$studioId'
+    | '/embed/$embedId/map'
+    | '/embed/$embedId/metrics'
     | '/live/$overlayId/map'
     | '/live/$overlayId/metrics'
     | '/live/$overlayId/preview'
+    | '/api/embed/$embedId/session'
     | '/api/live/$overlayId/session'
+    | '/api/share/$shareId/session'
+    | '/embed/$embedId/metric/$metric'
     | '/live/$overlayId/metric/$metric'
   id:
     | '__root__'
     | '/'
     | '/api/health'
+    | '/embed/$embedId'
     | '/live/$overlayId'
+    | '/share/$shareId'
+    | '/studio/$studioId'
+    | '/embed/$embedId/map'
+    | '/embed/$embedId/metrics'
     | '/live/$overlayId/map'
     | '/live/$overlayId/metrics'
     | '/live/$overlayId/preview'
+    | '/api/embed/$embedId/session'
     | '/api/live/$overlayId/session'
+    | '/api/share/$shareId/session'
+    | '/embed/$embedId/metric/$metric'
     | '/live/$overlayId/metric/$metric'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   ApiHealthRoute: typeof ApiHealthRoute
+  EmbedEmbedIdRoute: typeof EmbedEmbedIdRouteWithChildren
   LiveOverlayIdRoute: typeof LiveOverlayIdRouteWithChildren
+  ShareShareIdRoute: typeof ShareShareIdRoute
+  StudioStudioIdRoute: typeof StudioStudioIdRoute
+  ApiEmbedEmbedIdSessionRoute: typeof ApiEmbedEmbedIdSessionRoute
   ApiLiveOverlayIdSessionRoute: typeof ApiLiveOverlayIdSessionRoute
+  ApiShareShareIdSessionRoute: typeof ApiShareShareIdSessionRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -140,11 +242,32 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/studio/$studioId': {
+      id: '/studio/$studioId'
+      path: '/studio/$studioId'
+      fullPath: '/studio/$studioId'
+      preLoaderRoute: typeof StudioStudioIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/share/$shareId': {
+      id: '/share/$shareId'
+      path: '/share/$shareId'
+      fullPath: '/share/$shareId'
+      preLoaderRoute: typeof ShareShareIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/live/$overlayId': {
       id: '/live/$overlayId'
       path: '/live/$overlayId'
       fullPath: '/live/$overlayId'
       preLoaderRoute: typeof LiveOverlayIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/embed/$embedId': {
+      id: '/embed/$embedId'
+      path: '/embed/$embedId'
+      fullPath: '/embed/$embedId'
+      preLoaderRoute: typeof EmbedEmbedIdRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/health': {
@@ -175,12 +298,40 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof LiveOverlayIdMapRouteImport
       parentRoute: typeof LiveOverlayIdRoute
     }
+    '/embed/$embedId/metrics': {
+      id: '/embed/$embedId/metrics'
+      path: '/metrics'
+      fullPath: '/embed/$embedId/metrics'
+      preLoaderRoute: typeof EmbedEmbedIdMetricsRouteImport
+      parentRoute: typeof EmbedEmbedIdRoute
+    }
+    '/embed/$embedId/map': {
+      id: '/embed/$embedId/map'
+      path: '/map'
+      fullPath: '/embed/$embedId/map'
+      preLoaderRoute: typeof EmbedEmbedIdMapRouteImport
+      parentRoute: typeof EmbedEmbedIdRoute
+    }
     '/live/$overlayId/metric/$metric': {
       id: '/live/$overlayId/metric/$metric'
       path: '/metric/$metric'
       fullPath: '/live/$overlayId/metric/$metric'
       preLoaderRoute: typeof LiveOverlayIdMetricMetricRouteImport
       parentRoute: typeof LiveOverlayIdRoute
+    }
+    '/embed/$embedId/metric/$metric': {
+      id: '/embed/$embedId/metric/$metric'
+      path: '/metric/$metric'
+      fullPath: '/embed/$embedId/metric/$metric'
+      preLoaderRoute: typeof EmbedEmbedIdMetricMetricRouteImport
+      parentRoute: typeof EmbedEmbedIdRoute
+    }
+    '/api/share/$shareId/session': {
+      id: '/api/share/$shareId/session'
+      path: '/api/share/$shareId/session'
+      fullPath: '/api/share/$shareId/session'
+      preLoaderRoute: typeof ApiShareShareIdSessionRouteImport
+      parentRoute: typeof rootRouteImport
     }
     '/api/live/$overlayId/session': {
       id: '/api/live/$overlayId/session'
@@ -189,8 +340,31 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiLiveOverlayIdSessionRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/embed/$embedId/session': {
+      id: '/api/embed/$embedId/session'
+      path: '/api/embed/$embedId/session'
+      fullPath: '/api/embed/$embedId/session'
+      preLoaderRoute: typeof ApiEmbedEmbedIdSessionRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
+
+interface EmbedEmbedIdRouteChildren {
+  EmbedEmbedIdMapRoute: typeof EmbedEmbedIdMapRoute
+  EmbedEmbedIdMetricsRoute: typeof EmbedEmbedIdMetricsRoute
+  EmbedEmbedIdMetricMetricRoute: typeof EmbedEmbedIdMetricMetricRoute
+}
+
+const EmbedEmbedIdRouteChildren: EmbedEmbedIdRouteChildren = {
+  EmbedEmbedIdMapRoute: EmbedEmbedIdMapRoute,
+  EmbedEmbedIdMetricsRoute: EmbedEmbedIdMetricsRoute,
+  EmbedEmbedIdMetricMetricRoute: EmbedEmbedIdMetricMetricRoute,
+}
+
+const EmbedEmbedIdRouteWithChildren = EmbedEmbedIdRoute._addFileChildren(
+  EmbedEmbedIdRouteChildren,
+)
 
 interface LiveOverlayIdRouteChildren {
   LiveOverlayIdMapRoute: typeof LiveOverlayIdMapRoute
@@ -213,8 +387,13 @@ const LiveOverlayIdRouteWithChildren = LiveOverlayIdRoute._addFileChildren(
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   ApiHealthRoute: ApiHealthRoute,
+  EmbedEmbedIdRoute: EmbedEmbedIdRouteWithChildren,
   LiveOverlayIdRoute: LiveOverlayIdRouteWithChildren,
+  ShareShareIdRoute: ShareShareIdRoute,
+  StudioStudioIdRoute: StudioStudioIdRoute,
+  ApiEmbedEmbedIdSessionRoute: ApiEmbedEmbedIdSessionRoute,
   ApiLiveOverlayIdSessionRoute: ApiLiveOverlayIdSessionRoute,
+  ApiShareShareIdSessionRoute: ApiShareShareIdSessionRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

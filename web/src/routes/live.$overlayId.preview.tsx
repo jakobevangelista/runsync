@@ -8,11 +8,10 @@ export const Route = createFileRoute("/live/$overlayId/preview")({
 });
 
 function PreviewRoute() {
-  const { overlayId } = Route.useParams();
   const defaults = liveRoute.useRouteContext();
   return (
     <Preview
-      overlayId={overlayId}
+      embedId={defaults.embedId}
       defaultUnits={defaults.defaultUnits}
       defaultPace={defaults.defaultPace}
     />
