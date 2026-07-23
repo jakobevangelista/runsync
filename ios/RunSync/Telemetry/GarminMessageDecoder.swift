@@ -11,8 +11,23 @@ enum GarminMessageDecoderError: Error, Equatable {
     case invalidGPSQuality(Int)
 }
 
+enum GarminDecodeWarning: Hashable, Sendable {
+    case invalidWatchDiagnostic(String)
+
+    var diagnosticKey: String {
+        switch self {
+        case .invalidWatchDiagnostic(let key): key
+        }
+    }
+}
+
+struct GarminDecodedMessage: Equatable, Sendable {
+    let sample: TelemetrySample
+    let warnings: [GarminDecodeWarning]
+}
+
 enum GarminMessageDecoder {
-    static func decode(_ message: Any) throws -> TelemetrySample {
+    static func decode(_ message: Any) throws -> GarminDecodedMessage {
         guard let source = message as? [AnyHashable: Any] else {
             throw GarminMessageDecoderError.invalidRoot
         }
@@ -62,7 +77,23 @@ enum GarminMessageDecoder {
             gpsQuality = nil
         }
 
-        return TelemetrySample(
+        var warnings: [GarminDecodeWarning] = []
+        let buildID = optionalDiagnosticString("wb", from: values, warnings: &warnings)
+        let timeoutCount = optionalDiagnosticInteger("wt", from: values, min: 0, max: Int(Int32.max), warnings: &warnings)
+        let errorCount = optionalDiagnosticInteger("we", from: values, min: 0, max: Int(Int32.max), warnings: &warnings)
+        let exceptionCount = optionalDiagnosticInteger("wx", from: values, min: 0, max: Int(Int32.max), warnings: &warnings)
+        let consecutiveFailures = optionalDiagnosticInteger("wf", from: values, min: 0, max: Int(Int32.max), warnings: &warnings)
+        let lastOutcome: WatchTransportOutcome?
+        if let outcome = optionalDiagnosticInteger("wo", from: values, min: 0, max: 4, warnings: &warnings) {
+            lastOutcome = WatchTransportOutcome(rawValue: outcome)
+            if lastOutcome == nil {
+                warnings.append(.invalidWatchDiagnostic("wo"))
+            }
+        } else {
+            lastOutcome = nil
+        }
+
+        let sample = TelemetrySample(
             protocolVersion: version,
             sequence: sequence,
             state: state,
@@ -76,8 +107,15 @@ enum GarminMessageDecoder {
             longitudeMicrodegrees: longitude,
             gpsQuality: gpsQuality,
             altitudeDecimeters: try optionalInteger("alt", from: values),
-            totalAscentMeters: try optionalInteger("asc", from: values)
+            totalAscentMeters: try optionalInteger("asc", from: values),
+            watchBuildID: buildID,
+            transportTimeoutCount: timeoutCount,
+            transportErrorCount: errorCount,
+            transportExceptionCount: exceptionCount,
+            transportConsecutiveFailures: consecutiveFailures,
+            transportLastOutcome: lastOutcome
         )
+        return GarminDecodedMessage(sample: sample, warnings: warnings)
     }
 
     static func diagnosticReason(for error: Error) -> String {
@@ -151,5 +189,42 @@ enum GarminMessageDecoder {
             throw GarminMessageDecoderError.invalidInteger(key)
         }
         return Int(value)
+    }
+
+    private static func optionalDiagnosticInteger(
+        _ key: String,
+        from values: [String: Any],
+        min: Int,
+        max: Int,
+        warnings: inout [GarminDecodeWarning]
+    ) -> Int? {
+        do {
+            guard let value = try optionalInteger(key, from: values) else { return nil }
+            guard value >= min, value <= max else {
+                warnings.append(.invalidWatchDiagnostic(key))
+                return nil
+            }
+            return value
+        } catch {
+            warnings.append(.invalidWatchDiagnostic(key))
+            return nil
+        }
+    }
+
+    private static func optionalDiagnosticString(
+        _ key: String,
+        from values: [String: Any],
+        warnings: inout [GarminDecodeWarning]
+    ) -> String? {
+        guard let rawValue = values[key], !(rawValue is NSNull) else {
+            return nil
+        }
+        guard let value = rawValue as? String,
+              (1...32).contains(value.count),
+              value.range(of: #"^[A-Za-z0-9._+-]+$"#, options: .regularExpression) != nil else {
+            warnings.append(.invalidWatchDiagnostic(key))
+            return nil
+        }
+        return value
     }
 }

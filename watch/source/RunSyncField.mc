@@ -29,12 +29,14 @@ class RunSyncField extends WatchUi.DataField {
             _cachedRunStart = info.startTime.value();
         }
         _sequence += 1;
+        decoratePayload(payload, now);
         _sender.enqueue(payload, now);
     }
 
     function onUpdate(dc as Graphics.Dc) as Void {
         View.onUpdate(dc);
 
+        var now = System.getTimer();
         var background = getBackgroundColor();
         var foreground = background == Graphics.COLOR_BLACK
             ? Graphics.COLOR_WHITE
@@ -47,9 +49,9 @@ class RunSyncField extends WatchUi.DataField {
         var titleFont = Graphics.FONT_MEDIUM;
         var detailFont = Graphics.FONT_SMALL;
         dc.drawText(dc.getWidth() / 2, dc.getHeight() * 0.28,
-            titleFont, statusText(), Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
+            titleFont, statusText(now), Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
         dc.drawText(dc.getWidth() / 2, dc.getHeight() * 0.62,
-            detailFont, detailText(), Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
+            detailFont, detailText(now), Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
     }
 
     function onTimerStart() as Void {
@@ -85,13 +87,15 @@ class RunSyncField extends WatchUi.DataField {
             payload["rt"] = _cachedRunStart;
         }
 
-        _sender.enqueueTerminal(payload, System.getTimer());
+        var now = System.getTimer();
+        decoratePayload(payload, now);
+        _sender.enqueueTerminal(payload, now);
         _sequence += 1;
         _terminalEnqueued = true;
         _cachedRunStart = null;
     }
 
-    private function statusText() as Lang.String {
+    private function statusText(now as Lang.Number) as Lang.String {
         if (_state == 4) {
             return "ENDED";
         }
@@ -104,31 +108,54 @@ class RunSyncField extends WatchUi.DataField {
         if (!_hasGPS) {
             return "WAIT GPS";
         }
-        var failureCount = _sender.consecutiveFailureCount();
-        if (failureCount >= 3) {
-            return "NO PHONE";
-        }
-        if (failureCount > 0) {
-            return "RETRY";
-        }
-        if (!_sender.hasCompleted()) {
-            return "CONNECT";
-        }
-        if (completeAgeSeconds() <= 10) {
-            return "LIVE";
-        }
-        return "DELAYED";
+        return _sender.transportStatusText(now);
     }
 
-    private function detailText() as Lang.String {
-        if (!_sender.hasCompleted()) {
-            return "Q " + _sequence.format("%d");
-        }
-
-        return completeAgeSeconds().format("%d") + "s  Q " + _sequence.format("%d");
+    private function detailText(now as Lang.Number) as Lang.String {
+        var diagnostics = _sender.diagnostics(now);
+        return "R2  Q " + _sequence.format("%d")
+            + "  T" + diagnosticCounter(diagnostics["timeouts"]).format("%d")
+            + " F" + diagnosticCounter(diagnostics["consecutiveFailures"]).format("%d");
     }
 
-    private function completeAgeSeconds() as Lang.Number {
-        return _sender.completionAgeSeconds(System.getTimer());
+    private function decoratePayload(payload as Lang.Dictionary, now as Lang.Number) as Void {
+        if (RUNSYNC_WATCH_BUILD_ID != null && RUNSYNC_WATCH_BUILD_ID.length() > 0) {
+            payload["wb"] = RUNSYNC_WATCH_BUILD_ID;
+        }
+
+        var diagnostics = _sender.diagnostics(now);
+        payload["wt"] = diagnosticCounter(diagnostics["timeouts"]);
+        payload["we"] = diagnosticCounter(diagnostics["errors"]);
+        payload["wx"] = diagnosticCounter(diagnostics["synchronousExceptions"]);
+        payload["wf"] = diagnosticCounter(diagnostics["consecutiveFailures"]);
+        payload["wo"] = diagnosticOutcome(diagnostics["lastOutcome"]);
+    }
+
+    private function diagnosticOutcome(value as Lang.Object?) as Lang.Number {
+        if (value == null) {
+            return 0;
+        }
+        var outcome = value as Lang.Number;
+        if (outcome < 0) {
+            return 0;
+        }
+        if (outcome > 4) {
+            return 4;
+        }
+        return outcome;
+    }
+
+    private function diagnosticCounter(value as Lang.Object?) as Lang.Number {
+        if (value == null) {
+            return 0;
+        }
+        var counter = value as Lang.Number;
+        if (counter < 0) {
+            return 0;
+        }
+        if (counter > 2147483647) {
+            return 2147483647;
+        }
+        return counter;
     }
 }

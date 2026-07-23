@@ -36,7 +36,28 @@ final class HTTPTelemetrySinkTests: XCTestCase {
             phoneReceivedAt: Date(timeIntervalSince1970: 1_783_884_121.25),
             garminDeviceIdentifier: deviceID,
             appVersion: "1.0",
-            sample: TelemetryTestSupport.sample(sequence: 175, elapsed: 523_000)
+            sample: TelemetrySample(
+                protocolVersion: 1,
+                sequence: 175,
+                state: .running,
+                activityStartEpochSeconds: 1_783_884_160,
+                elapsedTimeMilliseconds: 523_000,
+                distanceDecimeters: 100,
+                speedMillimetersPerSecond: 3_000,
+                heartRateBPM: 150,
+                cadenceRPM: 87,
+                latitudeMicrodegrees: 37_774_920,
+                longitudeMicrodegrees: -122_419_380,
+                gpsQuality: .good,
+                altitudeDecimeters: 382,
+                totalAscentMeters: 22,
+                watchBuildID: "e4764923abcd",
+                transportTimeoutCount: 2,
+                transportErrorCount: 3,
+                transportExceptionCount: 4,
+                transportConsecutiveFailures: 5,
+                transportLastOutcome: .timeout
+            )
         )
         TestURLProtocol.handler = { request in
             XCTAssertEqual(request.url?.absoluteString, "http://localhost:8080/v1/telemetry/batches")
@@ -56,6 +77,9 @@ final class HTTPTelemetrySinkTests: XCTestCase {
             let sample = try XCTUnwrap(values[0]["sample"] as? [String: Any])
             XCTAssertEqual(sample["heartRateBPM"] as? Int, 150)
             XCTAssertEqual(sample["latitudeMicrodegrees"] as? Int, 37_774_920)
+            XCTAssertEqual(sample["watchBuildID"] as? String, "e4764923abcd")
+            XCTAssertEqual(sample["transportTimeoutCount"] as? Int, 2)
+            XCTAssertEqual(sample["transportLastOutcome"] as? Int, WatchTransportOutcome.timeout.rawValue)
             return Self.response(request, status: 200, body: """
                 {"acknowledgedEnvelopeIds":["\(envelopeID.uuidString)"],"serverTime":"2026-07-12T18:42:01.410Z"}
                 """)

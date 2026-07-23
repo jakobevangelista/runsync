@@ -62,6 +62,7 @@ struct TelemetryIngestionFailure: Error, Sendable {
 actor TelemetryIngestor {
     private struct SessionRecovery: Sendable {
         let session: ActivitySessionState?
+        let latestEnvelope: TelemetryEnvelope?
     }
 
     private enum RejectionResolution {
@@ -177,6 +178,7 @@ actor TelemetryIngestor {
         defer { ingestionDidFinish() }
         let receivedAt = phoneReceivedAt ?? now()
         status.lastWatchReceiptAt = receivedAt
+        applyWatchDiagnostics(from: sample)
         guard captureEnabled else {
             return observedResult(
                 sample: sample,
@@ -1194,6 +1196,10 @@ actor TelemetryIngestor {
         guard !deletionInProgress, generation == configurationGeneration else { throw CancellationError() }
         guard !sessionRecovered || needsReconciliation else { return }
         currentSession = recovery.session
+        if let latestEnvelope = recovery.latestEnvelope {
+            status.lastWatchReceiptAt = latestEnvelope.phoneReceivedAt
+            applyWatchDiagnostics(from: latestEnvelope.sample)
+        }
         needsReconciliation = false
         sessionRecovered = true
         sessionRecoveryTask = nil
@@ -1207,6 +1213,7 @@ actor TelemetryIngestor {
         await checkpoint()
         try Task.checkCancellation()
         var recovered = restored
+        var latestRecoveredEnvelope: TelemetryEnvelope?
 
         if let session = restored {
             if let metadata = try await archive.runMetadata(runID: session.localRunID),
@@ -1219,6 +1226,7 @@ actor TelemetryIngestor {
 
         if var session = recovered {
             let latest = try await archive.latestEnvelope(runID: session.localRunID)
+            latestRecoveredEnvelope = latest
             if session.phase == .opening,
                let openingID = session.openingSampleEnvelopeID,
                try await archive.containsEnvelope(openingID, runID: session.localRunID),
@@ -1278,9 +1286,9 @@ actor TelemetryIngestor {
                 try Task.checkCancellation()
                 try await archive.writeRunMetadata(metadata)
             }
-            return SessionRecovery(session: recovered)
+            return SessionRecovery(session: recovered, latestEnvelope: latestRecoveredEnvelope)
         }
-        return SessionRecovery(session: nil)
+        return SessionRecovery(session: nil, latestEnvelope: latestRecoveredEnvelope)
     }
 
     private nonisolated static func applying(
@@ -1400,6 +1408,15 @@ actor TelemetryIngestor {
     private func updatePendingStatus() {
         status.pendingCount = pending.count
         status.oldestPendingAge = pending.first.map { max(0, now().timeIntervalSince($0.phoneReceivedAt)) }
+    }
+
+    private func applyWatchDiagnostics(from sample: TelemetrySample) {
+        status.watchBuildID = sample.watchBuildID ?? status.watchBuildID
+        status.watchTransportTimeoutCount = sample.transportTimeoutCount ?? status.watchTransportTimeoutCount
+        status.watchTransportErrorCount = sample.transportErrorCount ?? status.watchTransportErrorCount
+        status.watchTransportExceptionCount = sample.transportExceptionCount ?? status.watchTransportExceptionCount
+        status.watchTransportConsecutiveFailures = sample.transportConsecutiveFailures ?? status.watchTransportConsecutiveFailures
+        status.watchTransportLastOutcome = sample.transportLastOutcome ?? status.watchTransportLastOutcome
     }
 
     private func submissionIsCurrent(

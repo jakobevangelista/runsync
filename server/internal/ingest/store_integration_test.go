@@ -53,14 +53,38 @@ func TestIdempotencyConflictAndSequenceSemantics(t *testing.T) {
 	}
 	id := uuid.New()
 	batch := telemetry.Batch{InstallationID: installation, Envelopes: []telemetry.Envelope{makeEnvelope(id, 5)}}
+	build := "e4764923abcd"
+	timeouts, errorsCount, exceptions, failures := 1, 2, 3, 4
+	outcome := int16(3)
+	batch.Envelopes[0].Sample.WatchBuildID = &build
+	batch.Envelopes[0].Sample.TransportTimeoutCount = &timeouts
+	batch.Envelopes[0].Sample.TransportErrorCount = &errorsCount
+	batch.Envelopes[0].Sample.TransportExceptionCount = &exceptions
+	batch.Envelopes[0].Sample.TransportConsecutiveFailures = &failures
+	batch.Envelopes[0].Sample.TransportLastOutcome = &outcome
 	store := New(pool)
 	firstResult, err := store.Ingest(ctx, p, batch, now)
 	if err != nil || len(firstResult.Events) != 1 {
 		t.Fatalf("first: %#v %v", firstResult, err)
 	}
+	var storedBuild *string
+	var storedTimeouts, storedErrors, storedExceptions, storedFailures *int
+	var storedOutcome *int16
+	if err = pool.QueryRow(ctx, `SELECT watch_build_id,transport_timeout_count,transport_error_count,transport_exception_count,transport_consecutive_failures,transport_last_outcome FROM telemetry_samples WHERE envelope_id=$1`, id).Scan(&storedBuild, &storedTimeouts, &storedErrors, &storedExceptions, &storedFailures, &storedOutcome); err != nil {
+		t.Fatal(err)
+	}
+	if storedBuild == nil || *storedBuild != build || storedTimeouts == nil || *storedTimeouts != timeouts || storedErrors == nil || *storedErrors != errorsCount || storedExceptions == nil || *storedExceptions != exceptions || storedFailures == nil || *storedFailures != failures || storedOutcome == nil || *storedOutcome != outcome {
+		t.Fatalf("stored diagnostics = build:%v timeouts:%v errors:%v exceptions:%v failures:%v outcome:%v", storedBuild, storedTimeouts, storedErrors, storedExceptions, storedFailures, storedOutcome)
+	}
 	second, err := store.Ingest(ctx, p, batch, now.Add(time.Second))
 	if err != nil || len(second.Events) != 0 || len(second.Acknowledged) != 1 {
 		t.Fatalf("retry: %#v %v", second, err)
+	}
+	diagnosticConflict := batch
+	changedTimeouts := timeouts + 1
+	diagnosticConflict.Envelopes[0].Sample.TransportTimeoutCount = &changedTimeouts
+	if _, err = store.Ingest(ctx, p, diagnosticConflict, now); !errors.Is(err, ErrConflict) {
+		t.Fatalf("diagnostic conflict: %v", err)
 	}
 	conflict := batch
 	conflict.Envelopes = []telemetry.Envelope{makeEnvelope(id, 99)}
