@@ -43,6 +43,46 @@ func TestMetricBounds(t *testing.T) {
 	}
 }
 
+func TestWatchDiagnosticValidation(t *testing.T) {
+	build := "e4764923abcd-dirty"
+	timeouts, errors, exceptions, failures := 1, 2, 3, 4
+	outcome := int16(3)
+	s := Sample{
+		ProtocolVersion:              1,
+		State:                        1,
+		WatchBuildID:                 &build,
+		TransportTimeoutCount:        &timeouts,
+		TransportErrorCount:          &errors,
+		TransportExceptionCount:      &exceptions,
+		TransportConsecutiveFailures: &failures,
+		TransportLastOutcome:         &outcome,
+	}
+	if err := s.Validate(); err != nil {
+		t.Fatalf("valid diagnostics rejected: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*Sample)
+	}{
+		{"empty build", func(s *Sample) { v := ""; s.WatchBuildID = &v }},
+		{"long build", func(s *Sample) { v := "123456789012345678901234567890123"; s.WatchBuildID = &v }},
+		{"unsafe build", func(s *Sample) { v := "bad value"; s.WatchBuildID = &v }},
+		{"negative timeout", func(s *Sample) { v := -1; s.TransportTimeoutCount = &v }},
+		{"large errors", func(s *Sample) { v := int(int64(2147483647) + 1); s.TransportErrorCount = &v }},
+		{"bad outcome", func(s *Sample) { v := int16(5); s.TransportLastOutcome = &v }},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			candidate := s
+			tc.mutate(&candidate)
+			if candidate.Validate() == nil {
+				t.Fatal("invalid diagnostics accepted")
+			}
+		})
+	}
+}
+
 func TestBatchValidationClassifiesSafeEnvelopeAttribution(t *testing.T) {
 	now := time.Now()
 	envelopeID := uuid.New()

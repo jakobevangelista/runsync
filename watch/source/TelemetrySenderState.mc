@@ -6,6 +6,12 @@ const TELEMETRY_OUTCOME_SUCCESS = 1;
 const TELEMETRY_OUTCOME_ERROR = 2;
 const TELEMETRY_OUTCOME_TIMEOUT = 3;
 const TELEMETRY_OUTCOME_EXCEPTION = 4;
+const TELEMETRY_STATUS_LIVE = "LIVE";
+const TELEMETRY_STATUS_CONNECT = "CONNECT";
+const TELEMETRY_STATUS_RETRY = "RETRY";
+const TELEMETRY_STATUS_NO_PHONE = "NO PHONE";
+const TELEMETRY_STATUS_DELAYED = "DELAYED";
+const TELEMETRY_STATUS_READY = "READY";
 
 function telemetryUnsignedTimer(value as Lang.Number) as Lang.Long {
     var converted = value.toLong();
@@ -207,13 +213,80 @@ class TelemetrySenderState {
         return _retryDelayMilliseconds;
     }
 
+    function retryRemainingMilliseconds(now as Lang.Number) as Lang.Number {
+        if (_retryStartedAt == null) {
+            return 0;
+        }
+
+        var elapsed = telemetryElapsedMilliseconds(now, _retryStartedAt as Lang.Number);
+        if (elapsed >= _retryDelayMilliseconds) {
+            return 0;
+        }
+
+        return (_retryDelayMilliseconds - elapsed).toNumber();
+    }
+
+    function transportStatusText(now as Lang.Number) as Lang.String {
+        if (consecutiveFailureCount >= 3) {
+            return TELEMETRY_STATUS_NO_PHONE;
+        }
+        if (consecutiveFailureCount > 0) {
+            return TELEMETRY_STATUS_RETRY;
+        }
+        if (lastCompleteTimer == null) {
+            return TELEMETRY_STATUS_CONNECT;
+        }
+        if (completionAgeSeconds(now) <= 10) {
+            return TELEMETRY_STATUS_LIVE;
+        }
+        if (lastCompleteTimer != null) {
+            return TELEMETRY_STATUS_DELAYED;
+        }
+
+        return TELEMETRY_STATUS_READY;
+    }
+
+    function transportDetailText(now as Lang.Number) as Lang.String {
+        var detail = "";
+        var retryRemaining = retryRemainingMilliseconds(now);
+        if (retryRemaining > 0) {
+            detail = "WAIT " + millisecondsToDisplaySeconds(retryRemaining).format("%d") + "s";
+        } else if (_activeAttemptId != null) {
+            detail = "TRY " + activeAttemptAgeSeconds(now).format("%d") + "s";
+        } else if (lastCompleteTimer != null) {
+            detail = "OK " + completionAgeSeconds(now).format("%d") + "s";
+        } else {
+            detail = "NO TX";
+        }
+
+        if (lastOutcome != TELEMETRY_OUTCOME_NONE &&
+            lastOutcome != TELEMETRY_OUTCOME_SUCCESS) {
+            detail = detail + " " + outcomeToken();
+        }
+        if (consecutiveFailureCount > 0) {
+            detail = detail + " F" + consecutiveFailureCount.format("%d");
+        }
+        if (timeoutCount > 0) {
+            detail = detail + " T" + timeoutCount.format("%d");
+        }
+        if (synchronousExceptionCount > 0) {
+            detail = detail + " X" + synchronousExceptionCount.format("%d");
+        }
+
+        return detail;
+    }
+
     function diagnostics(now as Lang.Number) as Lang.Dictionary {
         return {
             "activeAttemptId" => _activeAttemptId,
             "activeAttemptAgeMs" => activeAttemptAgeMilliseconds(now),
             "consecutiveFailures" => consecutiveFailureCount,
             "lastOutcome" => lastOutcome,
+            "transportStatus" => transportStatusText(now),
+            "transportDetail" => transportDetailText(now),
+            "retryRemainingMs" => retryRemainingMilliseconds(now),
             "timeouts" => timeoutCount,
+            "errors" => errorCount,
             "staleCompletions" => staleCompletionCount,
             "staleErrors" => staleErrorCount,
             "preemptions" => preemptedCount,
@@ -223,6 +296,37 @@ class TelemetrySenderState {
             "pendingNormal" => _pendingNormal != null,
             "pendingTerminal" => _terminal != null
         };
+    }
+
+    private function activeAttemptAgeSeconds(now as Lang.Number) as Lang.Number {
+        var age = activeAttemptAgeMilliseconds(now);
+        if (age == null) {
+            return 0;
+        }
+        return ((age as Lang.Long) / 1000l).toNumber();
+    }
+
+    private function millisecondsToDisplaySeconds(value as Lang.Number) as Lang.Number {
+        if (value <= 0) {
+            return 0;
+        }
+        return ((value.toLong() + 999l) / 1000l).toNumber();
+    }
+
+    private function outcomeToken() as Lang.String {
+        if (lastOutcome == TELEMETRY_OUTCOME_ERROR) {
+            return "ERR";
+        }
+        if (lastOutcome == TELEMETRY_OUTCOME_TIMEOUT) {
+            return "TO";
+        }
+        if (lastOutcome == TELEMETRY_OUTCOME_EXCEPTION) {
+            return "EX";
+        }
+        if (lastOutcome == TELEMETRY_OUTCOME_SUCCESS) {
+            return "OK";
+        }
+        return "NA";
     }
 
     private function pump(now as Lang.Number) as TelemetrySendAction? {

@@ -70,6 +70,14 @@ import Toybox.System;
         return _state.activeAttemptAgeMilliseconds(now);
     }
 
+    function transportStatusText(now as Lang.Number) as Lang.String {
+        return _state.transportStatusText(now);
+    }
+
+    function transportDetailText(now as Lang.Number) as Lang.String {
+        return _state.transportDetailText(now);
+    }
+
     function diagnostics(now as Lang.Number) as Lang.Dictionary {
         var values = _state.diagnostics(now);
         values["detachedListeners"] = detachedListenerCount;

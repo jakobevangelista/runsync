@@ -26,6 +26,24 @@ enum GPSQuality: Int, Codable, Sendable {
     case good = 4
 }
 
+enum WatchTransportOutcome: Int, Codable, Sendable {
+    case none = 0
+    case success = 1
+    case error = 2
+    case timeout = 3
+    case exception = 4
+
+    var label: String {
+        switch self {
+        case .none: "Unknown"
+        case .success: "Success"
+        case .error: "Error"
+        case .timeout: "Timeout"
+        case .exception: "Exception"
+        }
+    }
+}
+
 struct TelemetrySample: Codable, Equatable, Sendable {
     let protocolVersion: Int
     let sequence: Int
@@ -41,6 +59,56 @@ struct TelemetrySample: Codable, Equatable, Sendable {
     let gpsQuality: GPSQuality?
     let altitudeDecimeters: Int?
     let totalAscentMeters: Int?
+    let watchBuildID: String?
+    let transportTimeoutCount: Int?
+    let transportErrorCount: Int?
+    let transportExceptionCount: Int?
+    let transportConsecutiveFailures: Int?
+    let transportLastOutcome: WatchTransportOutcome?
+
+    init(
+        protocolVersion: Int,
+        sequence: Int,
+        state: ActivityState,
+        activityStartEpochSeconds: Int? = nil,
+        elapsedTimeMilliseconds: Int? = nil,
+        distanceDecimeters: Int? = nil,
+        speedMillimetersPerSecond: Int? = nil,
+        heartRateBPM: Int? = nil,
+        cadenceRPM: Int? = nil,
+        latitudeMicrodegrees: Int? = nil,
+        longitudeMicrodegrees: Int? = nil,
+        gpsQuality: GPSQuality? = nil,
+        altitudeDecimeters: Int? = nil,
+        totalAscentMeters: Int? = nil,
+        watchBuildID: String? = nil,
+        transportTimeoutCount: Int? = nil,
+        transportErrorCount: Int? = nil,
+        transportExceptionCount: Int? = nil,
+        transportConsecutiveFailures: Int? = nil,
+        transportLastOutcome: WatchTransportOutcome? = nil
+    ) {
+        self.protocolVersion = protocolVersion
+        self.sequence = sequence
+        self.state = state
+        self.activityStartEpochSeconds = activityStartEpochSeconds
+        self.elapsedTimeMilliseconds = elapsedTimeMilliseconds
+        self.distanceDecimeters = distanceDecimeters
+        self.speedMillimetersPerSecond = speedMillimetersPerSecond
+        self.heartRateBPM = heartRateBPM
+        self.cadenceRPM = cadenceRPM
+        self.latitudeMicrodegrees = latitudeMicrodegrees
+        self.longitudeMicrodegrees = longitudeMicrodegrees
+        self.gpsQuality = gpsQuality
+        self.altitudeDecimeters = altitudeDecimeters
+        self.totalAscentMeters = totalAscentMeters
+        self.watchBuildID = watchBuildID
+        self.transportTimeoutCount = transportTimeoutCount
+        self.transportErrorCount = transportErrorCount
+        self.transportExceptionCount = transportExceptionCount
+        self.transportConsecutiveFailures = transportConsecutiveFailures
+        self.transportLastOutcome = transportLastOutcome
+    }
 }
 
 struct TelemetryEnvelope: Codable, Equatable, Identifiable, Sendable {
@@ -144,6 +212,12 @@ struct ServerUploadStatus: Equatable, Sendable {
     var quarantineCount: Int
     var lastQuarantinedEnvelopeID: UUID?
     var lastSafeErrorCategory: String?
+    var watchBuildID: String?
+    var watchTransportTimeoutCount: Int?
+    var watchTransportErrorCount: Int?
+    var watchTransportExceptionCount: Int?
+    var watchTransportConsecutiveFailures: Int?
+    var watchTransportLastOutcome: WatchTransportOutcome?
 
     var state: String { uploadState.label }
     var lastUploadAt: Date? { lastAttemptAt }
@@ -160,6 +234,73 @@ struct ServerUploadStatus: Equatable, Sendable {
         localArchiveIssueCount: 0,
         quarantineCount: 0,
         lastQuarantinedEnvelopeID: nil,
-        lastSafeErrorCategory: nil
+        lastSafeErrorCategory: nil,
+        watchBuildID: nil,
+        watchTransportTimeoutCount: nil,
+        watchTransportErrorCount: nil,
+        watchTransportExceptionCount: nil,
+        watchTransportConsecutiveFailures: nil,
+        watchTransportLastOutcome: nil
     )
+}
+
+enum WatchReceiptFreshness: Equatable, Sendable {
+    static let currentThreshold: TimeInterval = 10
+    static let unavailableThreshold: TimeInterval = 30
+
+    case captureDisabled
+    case never
+    case current(age: TimeInterval)
+    case delayed(age: TimeInterval)
+    case unavailable(age: TimeInterval)
+
+    static func evaluate(
+        captureEnabled: Bool,
+        lastReceiptAt: Date?,
+        now: Date
+    ) -> WatchReceiptFreshness {
+        guard captureEnabled else { return .captureDisabled }
+        guard let lastReceiptAt else { return .never }
+        let age = max(0, now.timeIntervalSince(lastReceiptAt))
+        if age <= currentThreshold {
+            return .current(age: age)
+        }
+        if age <= unavailableThreshold {
+            return .delayed(age: age)
+        }
+        return .unavailable(age: age)
+    }
+
+    var title: String {
+        switch self {
+        case .captureDisabled: "Capture disabled"
+        case .never: "Waiting for watch telemetry"
+        case .current: "Watch telemetry current"
+        case .delayed: "Watch telemetry delayed"
+        case .unavailable: "Watch telemetry unavailable"
+        }
+    }
+
+    var statusLabel: String {
+        switch self {
+        case .captureDisabled: "Capture disabled"
+        case .never: "Never"
+        case .current(let age): "Current, \(Self.seconds(age))s"
+        case .delayed(let age): "Delayed, \(Self.seconds(age))s"
+        case .unavailable(let age): "Unavailable, \(Self.seconds(age))s"
+        }
+    }
+
+    var ageLabel: String {
+        switch self {
+        case .captureDisabled: "Capture is disabled"
+        case .never: "No sample received yet"
+        case .current(let age), .delayed(let age), .unavailable(let age):
+            "Last sample \(Self.seconds(age))s ago"
+        }
+    }
+
+    private static func seconds(_ interval: TimeInterval) -> Int {
+        max(0, Int(interval.rounded(.down)))
+    }
 }

@@ -24,53 +24,68 @@ struct StatusView: View {
     }
 
     private var header: some View {
-        HStack(alignment: .center, spacing: 14) {
-            Circle()
-                .fill(model.lastSampleAt == nil ? Color.orange : Color.green)
-                .frame(width: 12, height: 12)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(model.lastSampleAt == nil ? "Waiting for telemetry" : "Telemetry received")
-                    .font(.headline)
-                TimelineView(.periodic(from: .now, by: 1)) { _ in
-                    Text(lastSampleText)
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            let freshness = WatchReceiptFreshness.evaluate(
+                captureEnabled: model.captureEnabled,
+                lastReceiptAt: model.lastSampleAt,
+                now: context.date
+            )
+            HStack(alignment: .center, spacing: 14) {
+                Circle()
+                    .fill(freshnessColor(freshness))
+                    .frame(width: 12, height: 12)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(freshness.title)
+                        .font(.headline)
+                    Text(freshness.ageLabel)
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
+                Spacer()
+                Text(model.activityStatus.uppercased())
+                    .font(.caption.bold())
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(.thinMaterial, in: Capsule())
             }
-            Spacer()
-            Text(model.activityStatus.uppercased())
-                .font(.caption.bold())
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(.thinMaterial, in: Capsule())
+            .padding(18)
+            .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 18))
         }
-        .padding(18)
-        .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 18))
     }
 
     private var statusGrid: some View {
-        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-            statusCell("Authorization", model.authorizationStatus)
-            statusCell("Watch", model.watchStatus)
-            statusCell("Data field", model.fieldStatus)
-            statusCell("Capture", model.captureEnabled ? "Enabled" : "Disabled")
-            statusCell("Garmin activity", model.activityStatus)
-            statusCell("RunSync session", model.runSyncSessionStatus)
-            statusCell("Current activity", abbreviatedRunID)
-            statusCell("Watch receipt", relativeDate(model.lastSampleAt))
-            statusCell("Local archive", model.archiveStatus)
-            statusCell("Archive append", relativeDate(model.lastArchiveAt))
-            statusCell("Connectivity", model.connectivityStatus)
-            statusCell("Upload", model.serverStatus)
-            statusCell("Received", "\(model.receivedCount)")
-            statusCell("Pending upload", pendingUploadText)
-            statusCell("Last attempt", relativeDate(model.lastUploadAt))
-            statusCell("Last acknowledgement", relativeDate(model.lastAcknowledgementAt))
-            if model.localArchiveIssueCount > 0 {
-                statusCell("Archive issues", "\(model.localArchiveIssueCount) blocking record(s)")
-            }
-            if model.quarantineCount > 0 {
-                statusCell("Quarantine", quarantineText)
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            let freshness = WatchReceiptFreshness.evaluate(
+                captureEnabled: model.captureEnabled,
+                lastReceiptAt: model.lastSampleAt,
+                now: context.date
+            )
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+                statusCell("Authorization", model.authorizationStatus)
+                statusCell("Watch", model.watchStatus)
+                statusCell("Data field", model.fieldStatus)
+                statusCell("Capture", model.captureEnabled ? "Enabled" : "Disabled")
+                statusCell("Garmin activity", model.activityStatus)
+                statusCell("RunSync session", model.runSyncSessionStatus)
+                statusCell("Current activity", abbreviatedRunID)
+                statusCell("Watch receipt", freshness.statusLabel)
+                statusCell("Watch build", model.watchBuildID ?? "Unknown")
+                statusCell("Watch transport", model.watchTransportLastOutcome?.label ?? "Unknown")
+                statusCell("Transport failures", transportFailureText)
+                statusCell("Local archive", model.archiveStatus)
+                statusCell("Archive append", relativeDate(model.lastArchiveAt))
+                statusCell("Connectivity", model.connectivityStatus)
+                statusCell("Upload", model.serverStatus)
+                statusCell("Received", "\(model.receivedCount)")
+                statusCell("Pending upload", pendingUploadText)
+                statusCell("Last attempt", relativeDate(model.lastUploadAt))
+                statusCell("Last acknowledgement", relativeDate(model.lastAcknowledgementAt))
+                if model.localArchiveIssueCount > 0 {
+                    statusCell("Archive issues", "\(model.localArchiveIssueCount) blocking record(s)")
+                }
+                if model.quarantineCount > 0 {
+                    statusCell("Quarantine", quarantineText)
+                }
             }
         }
     }
@@ -221,13 +236,6 @@ struct StatusView: View {
         .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 14))
     }
 
-    private var lastSampleText: String {
-        guard let lastSampleAt else { return "No sample received yet" }
-        return "Last sample \(max(0, Int(Date().timeIntervalSince(lastSampleAt))))s ago"
-    }
-
-    private var lastSampleAt: Date? { model.lastSampleAt }
-
     private var abbreviatedRunID: String {
         model.currentRunID.map { String($0.uuidString.prefix(8)) } ?? "None"
     }
@@ -245,6 +253,12 @@ struct StatusView: View {
         return "\(model.quarantineCount), last \(identifier) (\(category))"
     }
 
+    private var transportFailureText: String {
+        let failures = model.watchTransportConsecutiveFailures.map(String.init) ?? "Unknown"
+        let timeouts = model.watchTransportTimeoutCount.map(String.init) ?? "Unknown"
+        return "F \(failures), T \(timeouts)"
+    }
+
     private func recoveryText(_ result: GarminRecoveryResult) -> String {
         let capture = result.captureResumed ? "Capture resumed" : "Capture remains paused"
         let pending = "\(result.pendingEnvelopeCount) pending"
@@ -254,5 +268,15 @@ struct StatusView: View {
     private func relativeDate(_ date: Date?) -> String {
         guard let date else { return "Never" }
         return date.formatted(date: .abbreviated, time: .shortened)
+    }
+
+    private func freshnessColor(_ freshness: WatchReceiptFreshness) -> Color {
+        switch freshness {
+        case .captureDisabled: .gray
+        case .never: .orange
+        case .current: .green
+        case .delayed: .yellow
+        case .unavailable: .red
+        }
     }
 }
