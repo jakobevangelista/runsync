@@ -12,10 +12,14 @@ final class AppModel: ObservableObject {
     private let diagnosticRecorder: GarminDiagnosticRecorder
     private var lastReceiptDiagnostic: (receivedAt: Date, sequence: Int)?
     private var lastReceiptCheckpointAt: Date?
+    let iOSBuildID: String
 
     @Published var authorizationStatus = "Action required"
     @Published var watchStatus = "Disconnected"
     @Published var fieldStatus = "Unknown"
+    @Published var watchMessageStatus = GarminMessageStreamState.unconfigured.label
+    @Published var registrationGeneration: UInt64 = 0
+    @Published var transportRepairStatus = "Idle"
     @Published var activityStatus = "Waiting"
     @Published var runSyncSessionStatus = "None"
     @Published var archiveStatus = "Ready"
@@ -56,6 +60,9 @@ final class AppModel: ObservableObject {
 
     init(diagnosticRecorder: GarminDiagnosticRecorder = GarminDiagnosticRecorder()) {
         self.diagnosticRecorder = diagnosticRecorder
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "dev"
+        self.iOSBuildID = "\(version) (\(build))"
         diagnosticEvents = diagnosticRecorder.loadRecentSummaries(limit: 20)
         persistDiagnostic("process_started")
     }
@@ -160,6 +167,8 @@ final class AppModel: ObservableObject {
         lastQuarantineCategory = nil
         lastQuarantineSignature = nil
         recoveryResult = nil
+        watchMessageStatus = GarminMessageStreamState.waitingForReceipt.label
+        transportRepairStatus = "Idle"
         watchBuildID = nil
         watchTransportTimeoutCount = nil
         watchTransportErrorCount = nil
@@ -308,7 +317,9 @@ final class GarminDiagnosticRecorder: @unchecked Sendable {
         dateProvider: @escaping @Sendable () -> Date = { Date() },
         uptimeProvider: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
         appVersionProvider: @escaping @Sendable () -> String = {
-            Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
+            let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
+            let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "dev"
+            return "\(version) (\(build))"
         }
     ) {
         self.fileManager = fileManager

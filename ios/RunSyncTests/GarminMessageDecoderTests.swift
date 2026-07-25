@@ -170,4 +170,90 @@ final class GarminMessageDecoderTests: XCTestCase {
             .current(age: 0)
         )
     }
+
+    func testRegistrationReplacementAlwaysTearsDownBeforeRegistering() {
+        let oldA = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+        let oldB = UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
+        let replacement = UUID(uuidString: "00000000-0000-0000-0000-000000000003")!
+
+        XCTAssertEqual(
+            GarminRegistrationPlanner.replacement(
+                registeredDeviceIDs: [oldB, oldA],
+                registeredAppIDs: [oldB, oldA],
+                replacementDeviceIDs: [replacement]
+            ),
+            [
+                .unregisterApp(oldA),
+                .unregisterApp(oldB),
+                .unregisterDevice(oldA),
+                .unregisterDevice(oldB),
+                .registerDevice(replacement),
+                .registerApp(replacement)
+            ]
+        )
+    }
+
+    func testRegistrationReplacementDeduplicatesDeviceIdentifiers() {
+        let device = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+
+        XCTAssertEqual(
+            GarminRegistrationPlanner.replacement(
+                registeredDeviceIDs: [device, device],
+                registeredAppIDs: [device, device],
+                replacementDeviceIDs: [device, device]
+            ),
+            [
+                .unregisterApp(device),
+                .unregisterDevice(device),
+                .registerDevice(device),
+                .registerApp(device)
+            ]
+        )
+    }
+
+    func testTransportRecoveryPolicyOnlyRepairsExpectedStaleStreams() {
+        let policy = GarminTransportRecoveryPolicy.production
+        let now = Date(timeIntervalSince1970: 100)
+
+        XCTAssertFalse(policy.isStale(
+            captureEnabled: false,
+            streamExpected: true,
+            lastReceiptAt: now.addingTimeInterval(-31),
+            now: now
+        ))
+        XCTAssertFalse(policy.isStale(
+            captureEnabled: true,
+            streamExpected: false,
+            lastReceiptAt: now.addingTimeInterval(-31),
+            now: now
+        ))
+        XCTAssertFalse(policy.isStale(
+            captureEnabled: true,
+            streamExpected: true,
+            lastReceiptAt: nil,
+            now: now
+        ))
+        XCTAssertFalse(policy.isStale(
+            captureEnabled: true,
+            streamExpected: true,
+            lastReceiptAt: now.addingTimeInterval(-30),
+            now: now
+        ))
+        XCTAssertTrue(policy.isStale(
+            captureEnabled: true,
+            streamExpected: true,
+            lastReceiptAt: now.addingTimeInterval(-30.001),
+            now: now
+        ))
+    }
+
+    func testTransportRecoveryBackoffIsBounded() {
+        let policy = GarminTransportRecoveryPolicy.production
+
+        XCTAssertEqual(policy.backoff(afterFailureCount: 1), 15)
+        XCTAssertEqual(policy.backoff(afterFailureCount: 2), 30)
+        XCTAssertEqual(policy.backoff(afterFailureCount: 3), 60)
+        XCTAssertEqual(policy.backoff(afterFailureCount: 4), 120)
+        XCTAssertEqual(policy.backoff(afterFailureCount: 99), 120)
+    }
 }
