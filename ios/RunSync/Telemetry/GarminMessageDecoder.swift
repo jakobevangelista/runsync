@@ -107,7 +107,7 @@ enum GarminMessageDecoder {
             longitudeMicrodegrees: longitude,
             gpsQuality: gpsQuality,
             altitudeDecimeters: try optionalInteger("alt", from: values),
-            totalAscentMeters: try optionalInteger("asc", from: values),
+            totalAscentMeters: try optionalRoundedInteger("asc", from: values),
             watchBuildID: buildID,
             transportTimeoutCount: timeoutCount,
             transportErrorCount: errorCount,
@@ -189,6 +189,25 @@ enum GarminMessageDecoder {
             throw GarminMessageDecoderError.invalidInteger(key)
         }
         return Int(value)
+    }
+
+    private static func optionalRoundedInteger(_ key: String, from values: [String: Any]) throws -> Int? {
+        guard let rawValue = values[key], !(rawValue is NSNull) else {
+            return nil
+        }
+        guard let number = rawValue as? NSNumber,
+              CFGetTypeID(number) != CFBooleanGetTypeID() else {
+            throw GarminMessageDecoderError.invalidInteger(key)
+        }
+
+        let value = number.doubleValue
+        let rounded = value.rounded(.toNearestOrAwayFromZero)
+        guard value.isFinite,
+              rounded >= Double(Int32.min),
+              rounded <= Double(Int32.max) else {
+            throw GarminMessageDecoderError.invalidInteger(key)
+        }
+        return Int(rounded)
     }
 
     private static func optionalDiagnosticInteger(

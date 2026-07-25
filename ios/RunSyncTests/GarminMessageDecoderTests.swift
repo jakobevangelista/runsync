@@ -29,6 +29,17 @@ final class GarminMessageDecoderTests: XCTestCase {
         XCTAssertEqual(sample.totalAscentMeters, 22)
     }
 
+    func testRoundsFloatingPointTotalAscentFromWatchPayload() throws {
+        let sample = try GarminMessageDecoder.decode([
+            "v": NSNumber(value: 1),
+            "q": NSNumber(value: 176),
+            "st": NSNumber(value: 1),
+            "asc": NSNumber(value: Float(22.6))
+        ] as NSDictionary).sample
+
+        XCTAssertEqual(sample.totalAscentMeters, 23)
+    }
+
     func testRejectsBooleanAsInteger() {
         XCTAssertThrowsError(try GarminMessageDecoder.decode(["v": true, "q": 1, "st": 1])) {
             XCTAssertEqual($0 as? GarminMessageDecoderError, .invalidInteger("v"))

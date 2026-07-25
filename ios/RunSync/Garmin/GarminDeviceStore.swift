@@ -18,7 +18,8 @@ final class GarminDeviceStore {
 
         let dictionary = NSMutableDictionary()
         for device in devices {
-            dictionary[device.uuid.uuidString] = device
+            guard let deviceID = device.uuid else { continue }
+            dictionary[deviceID.uuidString] = device
         }
         let data = try NSKeyedArchiver.archivedData(withRootObject: dictionary, requiringSecureCoding: true)
         try data.write(to: archiveURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])

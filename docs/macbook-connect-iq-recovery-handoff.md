@@ -36,6 +36,186 @@ The watch sender is unchanged. It still keeps only the newest useful sample, so
 live telemetry resumes after repair but samples superseded during the outage
 are not replayed.
 
+## MacBook Execution Record - 2026-07-25
+
+This section records the implementation fixes and verification performed on the
+MacBook, iPhone, and watch. The original runbook remains below for future
+reproduction.
+
+### Revisions and environment
+
+- Recovery implementation: change `lskonmvm`, commit `0b41c6903b82`, bookmark
+  `connect-iq-transport-recovery-implementation@origin`.
+- Verified direct parent: merged `master` commit `8e74040a2676`.
+- MacBook fixes and this record: change `wpzkzqps`, based directly on the
+  recovery implementation. The physical-device binary used code commit
+  `8f6a26895096`; the only subsequent source-tree change was this document.
+- Xcode `26.4.1` (`17E202`) on macOS `26.4.1` (`25E253`).
+- Simulator: iPhone 17 Pro, iOS `26.4.1`.
+- Physical device: iPhone 17 Pro (`iPhone18,1`), iOS `26.5.2` (`23F84`).
+- Installed bundle: `com.jakobevangelista.runsync`, signed with team
+  `W6MVZPAS4Y`.
+- iOS app version after installation: `1.0 (2)`.
+- Watch app build remained `a7457b656cb4`; no watch update was required.
+- Garmin Connect version and watch firmware were not available from the device
+  tooling used for this run.
+
+### MacBook implementation fixes
+
+The fetched recovery implementation required narrow Mac/Xcode compatibility
+fixes before physical testing:
+
+- `GarminConnectionService` now constructs its default Connect IQ SDK client
+  inside the `@MainActor` initializer. This fixed the compiler error caused by
+  evaluating an actor-isolated default argument in a nonisolated context.
+- Connect IQ SDK `1.8.0` imports `IQDevice.uuid` as optional. Registration,
+  caching, status callbacks, and sorting now discard SDK device objects without
+  a UUID and use validated `UUID` keys.
+- The SDK compiled with the expected Swift selectors unchanged:
+  `unregister(forAppMessages:delegate:)` and
+  `unregister(forDeviceEvents:delegate:)`. Unregister-before-register behavior
+  remains intact.
+- `project.yml` and the generated `Info.plist` now use
+  `MARKETING_VERSION`/`CURRENT_PROJECT_VERSION` substitutions. Before this fix,
+  the project setting was build 2 but the installed app still displayed build
+  1.
+- Physical receipts exposed `asc` as a floating-point `NSNumber`; the strict
+  decoder had rejected every such watch message as `invalidInteger(asc)`. The
+  decoder now rounds only `asc` to the nearest integer, leaving all other
+  integer fields strict. A focused regression test covers `22.6 -> 23`.
+- A non-fatal compiler warning remains where the Garmin SDK accepts an
+  `@Sendable` completion but the local adapter protocol does not require one.
+  It did not block build or tests and was not broadened into an unrelated
+  concurrency refactor.
+
+Files changed by the MacBook implementation work:
+
+```text
+ios/RunSync/Garmin/GarminConnectionService.swift
+ios/RunSync/Garmin/GarminDeviceStore.swift
+ios/RunSync/Info.plist
+ios/RunSync/Telemetry/GarminMessageDecoder.swift
+ios/RunSyncTests/GarminMessageDecoderTests.swift
+ios/project.yml
+```
+
+### Build and simulator verification
+
+- `xcodegen generate` completed successfully.
+- Swift Package Manager resolved Garmin Connect IQ Companion SDK `1.8.0` at
+  revision `f0d29ff691d700a132d86205ed9bb091e336c2f7`.
+- Initial Xcode failures were preserved and diagnosed: actor isolation for the
+  default SDK client and optional UUID dictionary/key errors from `IQDevice`.
+- After the fixes, the complete simulator suite passed: 147 tests, 0 failures.
+- Result bundle:
+  `/Users/jakobevangelista/Library/Developer/Xcode/DerivedData/RunSync-ddbjhsrufnsmkpbemzkusngljano/Logs/Test/Test-RunSync-2026.07.25_15-18-50--0700.xcresult`.
+- The signed physical-device build succeeded and was installed over the
+  existing RunSync app. App data and the active Garmin activity were preserved.
+
+### Physical-device verification
+
+All recovery decisions below were validated using new receipt callbacks and an
+increasing sequence/count, not Garmin connection state alone.
+
+**Healthy baseline**
+
+- 117 receipts arrived over 150.48 seconds, sequence `10266 -> 10417`.
+- Receipt gaps ranged from 1.165 to 1.977 seconds.
+- No duplicate or non-increasing sequences occurred.
+- Activity state remained running, registration generation was 1, and current
+  timeout/failure counters were `0/0`.
+
+**Healthy Recover & Retry**
+
+- Manual recovery advanced registration generation `1 -> 2`.
+- Tier 1 unregistered and re-registered app-message delivery.
+- Recovery succeeded only after a new receipt, sequence `10563`, and receipts
+  continued afterward.
+
+**Primary Bluetooth off/on recovery**
+
+- RunSync was backgrounded normally; it was not force-quit.
+- iPhone Bluetooth became unavailable at `2026-07-25T21:45:16Z`. The last
+  healthy receipt was count 639, sequence `10958`.
+- Bluetooth remained off for at least the required 60 seconds. After it was
+  enabled, connection/discovery returned around `21:48:26Z`.
+- The first new receipt arrived around `21:48:35Z`, sequence `11159`, while
+  RunSync was still backgrounded. Foregrounding was not required.
+- Delivery then remained continuous for 93 receipts over 92 seconds, sequence
+  `11160 -> 11252`, with no duplicates/non-increasing sequences and a maximum
+  gap of about 1.14 seconds.
+- The same Garmin activity and local run remained active. Generation stayed at
+  2 because no registration replacement was needed.
+- Because delivery resumed before a repair tier ran, diagnostics did not emit
+  `transport_repair_succeeded`; the UI returned to healthy state. This is a
+  reporting expectation gap, but new receipts prove transport recovery.
+
+**Force-quit and manual reopen**
+
+- A Mac-issued `SIGKILL` was not counted because iOS relaunched the app through
+  Bluetooth state restoration.
+- The app was then force-quit from the iPhone app switcher at
+  `2026-07-25T21:52:24Z` and remained absent for 89 seconds.
+- After manual reopen, generation restarted at 1 and receipt `11571` arrived
+  4.6 seconds after process launch.
+- Sequence advanced `11373 -> 11571` on the same running activity and local run
+  `F1836597-693A-4478-A4C5-0D40153AF1BE`.
+
+**iPhone reboot**
+
+- The iPhone received a full reboot through `devicectl`.
+- After unlock and manual open, RunSync still displayed `1.0 (2)`.
+- Generation started at 1; foreground repair performed Tier 1 and advanced it
+  to 2.
+- `transport_repair_succeeded` was emitted only after new receipt `11689`.
+- The same local run and Garmin activity continued receiving data.
+
+**Tier escalation and authorization behavior**
+
+- The exact original wedge shape was not reproduced because the primary
+  Bluetooth test recovered automatically in the background.
+- During the first locked interval after reboot, receipts stopped at count 929,
+  sequence `11773`.
+- Two repair attempts executed Tier 1 and Tier 2, advancing generations `3 ->
+  4` and `5 -> 6`. Both attempts failed, with 15-second then 30-second backoff,
+  and neither falsely reported success.
+- The app internally entered authorization-required state after both tiers
+  failed, but the user did not see the exact authorization-required text before
+  the next automatic repair started.
+- The third Tier 1 attempt at generation 7 recovered only after new receipt
+  `11964`; fresh authorization was not needed. The receipt gap was about 188
+  seconds.
+
+**Locked-screen endurance**
+
+- The first post-reboot locked interval included the 188-second interruption
+  above, then recovered automatically while locked.
+- A clean locked interval began at `2026-07-25T22:03:54Z`, count 1044,
+  sequence `12078`, generation 7.
+- At the final observation (`2026-07-25T22:12:43Z`), 446 receipts had arrived
+  over 529.825 seconds (about 8 minutes 50 seconds), ending at sequence `12607`.
+- There were no duplicates, non-increasing sequences, device-status events,
+  repair events, registration replacements, or receipt gaps over 10 seconds.
+  The maximum receipt gap was 7.172 seconds; current timeout/failures remained
+  `0/0` and generation remained 7.
+- This passed the previous six-to-seven-minute failure window, but it is not a
+  completed 30-minute endurance result.
+
+### Evidence and current uncertainties
+
+- Privacy-safe diagnostic copies were preserved at
+  `/tmp/runsync-recovery-diagnostics.aERaaS/final-garmin-events.ndjson` and
+  `/tmp/runsync-recovery-diagnostics.aERaaS/final-garmin-events.1.ndjson`, with
+  milestone captures in the same directory. Location telemetry was not exposed.
+- Device Console retrieval was unavailable because the installed command-line
+  tooling did not provide device OSLog streaming. The durable RunSync diagnostic
+  timeline was used instead.
+- The visual authorization-required state still needs deterministic
+  confirmation.
+- The full 30-minute and two-hour locked-screen endurance runs remain open.
+- Server acceptance of diagnostic payloads and protected-backlog drainage were
+  outside this physical transport test and remain open.
+
 ## Important Safety Rules
 
 - Do not uninstall RunSync before collecting diagnostics. Uninstalling can
@@ -401,19 +581,22 @@ needed.
 
 ## Acceptance Checklist
 
-- [ ] Xcode project regenerates with build number 2.
-- [ ] Garmin SDK 1.8.0 resolves.
-- [ ] iOS simulator build and all unit tests pass.
-- [ ] Existing app data survives installation.
-- [ ] Device shows iOS build `1.0 (2)`.
-- [ ] Baseline receives one stream without duplicates.
-- [ ] Replacement logs unregister before register.
-- [ ] Bluetooth off/on resumes receipts without ending the activity.
-- [ ] `Recover & Retry` repairs the Connect IQ stream.
-- [ ] Success is displayed only after a new receipt.
-- [ ] Fresh authorization recovers if Tier 1 and Tier 2 fail.
-- [ ] Force-quit recovers after manual reopen.
-- [ ] Phone reboot recovers after unlock/open.
-- [ ] Thirty-minute locked-screen run passes.
+- [x] Xcode project regenerates with build number 2.
+- [x] Garmin SDK 1.8.0 resolves.
+- [x] iOS simulator build and all 147 unit tests pass.
+- [x] Existing app data survives installation.
+- [x] Device shows iOS build `1.0 (2)`.
+- [x] Baseline receives one stream without duplicates.
+- [x] Replacement logs unregister before register.
+- [x] Bluetooth off/on resumes receipts without ending the activity.
+- [x] `Recover & Retry` repairs the Connect IQ stream.
+- [x] Success is reported only after a new receipt.
+- [ ] Fresh authorization recovers if Tier 1 and Tier 2 fail. Both tiers and
+  authorization-required state executed, but a later automatic Tier 1 attempt
+  recovered before authorization was needed and the prompt was not observed.
+- [x] Force-quit recovers after manual reopen.
+- [x] Phone reboot recovers after unlock/open.
+- [ ] Thirty-minute locked-screen run passes. A clean 8-minute-50-second run
+  passed the previous six-to-seven-minute cutoff.
 - [ ] Two-hour locked-screen run passes.
 - [ ] Server accepts diagnostic payloads and drains the protected backlog.

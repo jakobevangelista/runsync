@@ -221,7 +221,7 @@ final class GarminConnectionService: NSObject {
         deviceStore: GarminDeviceStore = GarminDeviceStore(),
         captureSettings: CaptureSettingsStore = CaptureSettingsStore(),
         serverConfiguration: ServerConfigurationStore? = nil,
-        connectIQ: GarminConnectIQClient = GarminConnectIQSDKClient(),
+        connectIQ: GarminConnectIQClient? = nil,
         recoveryPolicy: GarminTransportRecoveryPolicy = .production
     ) {
         self.model = model
@@ -229,7 +229,7 @@ final class GarminConnectionService: NSObject {
         self.deviceStore = deviceStore
         self.captureSettings = captureSettings
         self.serverConfiguration = serverConfiguration
-        self.connectIQ = connectIQ
+        self.connectIQ = connectIQ ?? GarminConnectIQSDKClient()
         self.recoveryPolicy = recoveryPolicy
         self.receiptPipeline = GarminReceiptPipeline(
             consume: { [model, ingestor, captureSettings] receipt in
@@ -634,10 +634,14 @@ final class GarminConnectionService: NSObject {
         let previousDevices = devicesByID
         let previousApps = appsByDeviceID
         let replacements = Dictionary(
-            devices.map { ($0.uuid, $0) },
+            devices.compactMap { device -> (UUID, IQDevice)? in
+                guard let deviceID = device.uuid else { return nil }
+                return (deviceID, device)
+            },
             uniquingKeysWith: { _, latest in latest }
         )
-        let canonicalDevices = replacements.values.sorted { $0.uuid.uuidString < $1.uuid.uuidString }
+        let canonicalDeviceEntries = replacements.sorted { $0.key.uuidString < $1.key.uuidString }
+        let canonicalDevices = canonicalDeviceEntries.map { $0.value }
         let actions = GarminRegistrationPlanner.replacement(
             registeredDeviceIDs: previousDevices.keys,
             registeredAppIDs: previousApps.keys,
@@ -693,14 +697,20 @@ final class GarminConnectionService: NSObject {
 
         devicesByID = replacements
         model.authorizationStatus = canonicalDevices.isEmpty ? "Action required" : "Authorized"
-        model.authorizedDevices = canonicalDevices
-            .map { GarminDeviceOption(id: $0.uuid, name: $0.friendlyName ?? $0.modelName ?? "Garmin device") }
+        model.authorizedDevices = canonicalDeviceEntries
+            .map {
+                GarminDeviceOption(
+                    id: $0.key,
+                    name: $0.value.friendlyName ?? $0.value.modelName ?? "Garmin device"
+                )
+            }
             .sorted { $0.name < $1.name }
         let selected = captureSettings.load().selectedDeviceID
         if let selectedDeviceID = selected, devicesByID[selectedDeviceID] == nil {
             model.record("Selected capture watch is not currently authorized")
         }
-        if selected == nil, canonicalDevices.count == 1, let deviceID = canonicalDevices.first?.uuid {
+        if selected == nil, canonicalDeviceEntries.count == 1 {
+            let deviceID = canonicalDeviceEntries[0].key
             captureSettings.setSelectedDeviceID(deviceID)
             model.selectedCaptureDeviceID = deviceID
             model.record("Selected the only authorized watch for capture")
@@ -759,7 +769,8 @@ final class GarminConnectionService: NSObject {
     }
 
     private func updateAppStatus(for device: IQDevice) {
-        guard let app = appsByDeviceID[device.uuid] else { return }
+        guard let deviceID = device.uuid,
+              let app = appsByDeviceID[deviceID] else { return }
         let generation = registrationGeneration
         connectIQ.getAppStatus(app) { [weak self] status in
             Task { @MainActor in
@@ -773,7 +784,7 @@ final class GarminConnectionService: NSObject {
                     self.model.fieldStatus = status.isInstalled ? "Installed" : "Missing"
                     self.model.record("Data field status: \(status.isInstalled ? "installed" : "missing")")
                     self.model.persistDiagnostic("app_status_request_completed", details: [
-                        "device": abbreviated(device.uuid.uuidString),
+                        "device": abbreviated(deviceID.uuidString),
                         "generation": "\(generation)",
                         "installed": "\(status.isInstalled)"
                     ])
@@ -781,7 +792,7 @@ final class GarminConnectionService: NSObject {
                     self.model.fieldStatus = "Unknown"
                     self.model.record("Data field status request failed")
                     self.model.persistDiagnostic("app_status_request_failed", details: [
-                        "device": abbreviated(device.uuid.uuidString),
+                        "device": abbreviated(deviceID.uuidString),
                         "generation": "\(generation)"
                     ])
                 }
@@ -921,7 +932,9 @@ final class GarminConnectionService: NSObject {
         ])
 
         if !streamExpected {
-            let devices = devicesByID.values.sorted { $0.uuid.uuidString < $1.uuid.uuidString }
+            let devices = devicesByID
+                .sorted { $0.key.uuidString < $1.key.uuidString }
+                .map { $0.value }
             replaceDevices(devices, persist: false, reason: "\(reason.rawValue)_no_active_stream")
             let result = GarminTransportRepairResult(
                 outcome: .waitingForReceipt,
@@ -956,7 +969,9 @@ final class GarminConnectionService: NSObject {
             return completeTransportRepair(tier: 1, sequence: sequence)
         }
 
-        let devices = devicesByID.values.sorted { $0.uuid.uuidString < $1.uuid.uuidString }
+        let devices = devicesByID
+            .sorted { $0.key.uuidString < $1.key.uuidString }
+            .map { $0.value }
         replaceDevices(devices, persist: false, reason: "\(reason.rawValue)_tier_2")
         updateMessageStreamState(.repairing(tier: 2))
         let tierTwoStartedAt = Date()
@@ -1104,9 +1119,12 @@ extension GarminConnectionService: IQDeviceEventDelegate {
         case .connected: label = "Connected, discovering"
         @unknown default: label = "Unknown"
         }
-        let deviceTag = device?.uuid.uuidString
+        let deviceTag = device?.uuid?.uuidString
         Task { @MainActor [weak self] in
-            guard let self, let device, self.devicesByID[device.uuid] != nil else { return }
+            guard let self,
+                  let device,
+                  let deviceID = device.uuid,
+                  self.devicesByID[deviceID] != nil else { return }
             self.model.watchStatus = label
             self.model.record("Watch status: \(label)")
             self.model.persistDiagnostic("device_status_changed", details: [
@@ -1114,7 +1132,7 @@ extension GarminConnectionService: IQDeviceEventDelegate {
                 "status": label,
                 "generation": "\(self.registrationGeneration)"
             ])
-            if self.captureSettings.load().selectedDeviceID == device.uuid {
+            if self.captureSettings.load().selectedDeviceID == deviceID {
                 switch status {
                 case .bluetoothNotReady, .notFound, .notConnected, .invalidDevice:
                     self.selectedDeviceWasDisconnected = true
@@ -1129,15 +1147,15 @@ extension GarminConnectionService: IQDeviceEventDelegate {
 
     nonisolated func deviceCharacteristicsDiscovered(_ device: IQDevice!) {
         Task { @MainActor [weak self] in
-            guard let self, let device else { return }
+            guard let self, let device, let deviceID = device.uuid else { return }
             self.model.watchStatus = "Ready: \(device.friendlyName ?? device.modelName ?? "Garmin")"
             self.model.record("Watch characteristics discovered")
             self.model.persistDiagnostic("device_characteristics_discovered", details: [
-                "device": abbreviated(device.uuid.uuidString),
+                "device": abbreviated(deviceID.uuidString),
                 "generation": "\(self.registrationGeneration)"
             ])
             self.updateAppStatus(for: device)
-            self.scheduleReconnectVerification(for: device.uuid)
+            self.scheduleReconnectVerification(for: deviceID)
         }
     }
 }
