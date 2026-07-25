@@ -74,23 +74,14 @@ With the active SDK `bin` directory on `PATH`:
 
 ```sh
 cd watch
-mkdir -p bin
-monkeyc \
-  -d fr965 \
-  -f monkey.jungle \
-  -o bin/RunSync.prg \
-  -y "$HOME/.garmin/developer_key.der"
+./build.sh physical
 ```
 
 Simulator launch:
 
 ```sh
 connectiq
-monkeyc \
-  -d fr965 \
-  -f simulator.jungle \
-  -o bin/RunSync-simulator.prg \
-  -y "$HOME/.garmin/developer_key.der"
+./build.sh simulator
 monkeydo bin/RunSync-simulator.prg fr965
 ```
 
@@ -99,11 +90,7 @@ The simulator build uses a deterministic local transport because Garmin's simula
 Compile and run the deterministic sender tests with:
 
 ```sh
-monkeyc -t \
-  -d fr965 \
-  -f test.jungle \
-  -o bin/RunSync-tests.prg \
-  -y "$HOME/.garmin/developer_key.der"
+./build.sh test
 monkeydo bin/RunSync-tests.prg fr965 -t
 ```
 

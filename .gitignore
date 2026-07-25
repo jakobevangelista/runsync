@@ -5,6 +5,8 @@ DerivedData/
 
 # Garmin build output and private signing keys
 watch/bin/
+watch/generated/*
+!watch/generated/.gitkeep
 *.der
 
 # macOS

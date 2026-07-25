@@ -152,6 +152,63 @@ function telemetryTimerWrapTest(logger as Test.Logger) as Lang.Boolean {
 }
 
 (:test)
+function telemetryTransportStatusTextTest(logger as Test.Logger) as Lang.Boolean {
+    var state = new TelemetrySenderState();
+    Test.assertEqual(TELEMETRY_STATUS_CONNECT, state.transportStatusText(0));
+    Test.assertEqual("NO TX", state.transportDetailText(0));
+
+    var first = state.enqueueNormal(testPayload(1), 0) as TelemetrySendAction;
+    Test.assertEqual(TELEMETRY_STATUS_CONNECT, state.transportStatusText(0));
+    Test.assertEqual("TRY 0s", state.transportDetailText(0));
+
+    state.complete(first.attemptId, 0);
+    Test.assertEqual(TELEMETRY_STATUS_LIVE, state.transportStatusText(5000));
+    Test.assertEqual("OK 5s", state.transportDetailText(5000));
+    Test.assertEqual(TELEMETRY_STATUS_DELAYED, state.transportStatusText(11000));
+    Test.assertEqual("OK 11s", state.transportDetailText(11000));
+    return true;
+}
+
+(:test)
+function telemetryFailureStatusAndDetailTextTest(logger as Test.Logger) as Lang.Boolean {
+    var state = new TelemetrySenderState();
+    var first = state.enqueueNormal(testPayload(1), 0) as TelemetrySendAction;
+    state.fail(first.attemptId, 0);
+    Test.assertEqual(TELEMETRY_STATUS_RETRY, state.transportStatusText(0));
+    Test.assertEqual("WAIT 1s ERR F1", state.transportDetailText(0));
+
+    var second = state.enqueueNormal(testPayload(2), 1000) as TelemetrySendAction;
+    state.fail(second.attemptId, 1000);
+    var third = state.enqueueNormal(testPayload(3), 3000) as TelemetrySendAction;
+    state.fail(third.attemptId, 3000);
+    Test.assertEqual(TELEMETRY_STATUS_NO_PHONE, state.transportStatusText(3000));
+    Test.assertEqual("WAIT 4s ERR F3", state.transportDetailText(3000));
+    return true;
+}
+
+(:test)
+function telemetryTimeoutStatusAndDiagnosticsTest(logger as Test.Logger) as Lang.Boolean {
+    var state = new TelemetrySenderState();
+    state.enqueueNormal(testPayload(1), 0);
+    state.enqueueNormal(testPayload(2), 1000);
+
+    Test.assert(state.tick(15000) == null);
+    Test.assertEqual(TELEMETRY_STATUS_RETRY, state.transportStatusText(15000));
+    Test.assertEqual("WAIT 1s TO F1 T1", state.transportDetailText(15000));
+    Test.assertEqual(1000, state.retryRemainingMilliseconds(15000));
+
+    var diagnostics = state.diagnostics(15000);
+    Test.assertEqual(TELEMETRY_STATUS_RETRY, diagnostics["transportStatus"]);
+    Test.assertEqual("WAIT 1s TO F1 T1", diagnostics["transportDetail"]);
+    Test.assertEqual(1000, diagnostics["retryRemainingMs"]);
+
+    var second = state.tick(16000) as TelemetrySendAction;
+    Test.assertEqual(2l, second.attemptId);
+    Test.assertEqual("TRY 0s TO F1 T1", state.transportDetailText(16000));
+    return true;
+}
+
+(:test)
 function telemetryLongOutageRemainsBoundedTest(logger as Test.Logger) as Lang.Boolean {
     var state = new TelemetrySenderState();
     var now = 0;

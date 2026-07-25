@@ -1,8 +1,10 @@
 package live
 
 import (
+	"encoding/json"
 	"github.com/google/uuid"
 	"github.com/jakobevangelista/runsync/server/internal/telemetry"
+	"strings"
 	"testing"
 )
 
@@ -33,6 +35,30 @@ func TestLocationPolicy(t *testing.T) {
 	rounded := EventView(e, "rounded", &d)
 	if *rounded.LatitudeMicrodegrees != 37775000 || *rounded.LongitudeMicrodegrees != -122419000 {
 		t.Fatalf("wrong rounding: %d,%d", *rounded.LatitudeMicrodegrees, *rounded.LongitudeMicrodegrees)
+	}
+}
+
+func TestEventViewOmitsPrivateWatchDiagnostics(t *testing.T) {
+	build := "e4764923abcd"
+	timeouts, errors, exceptions, failures := 1, 2, 3, 4
+	outcome := int16(3)
+	e := telemetry.Event{}
+	e.Envelope.Sample.WatchBuildID = &build
+	e.Envelope.Sample.TransportTimeoutCount = &timeouts
+	e.Envelope.Sample.TransportErrorCount = &errors
+	e.Envelope.Sample.TransportExceptionCount = &exceptions
+	e.Envelope.Sample.TransportConsecutiveFailures = &failures
+	e.Envelope.Sample.TransportLastOutcome = &outcome
+
+	body, err := json.Marshal(EventView(e, "precise", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded := string(body)
+	for _, field := range []string{"watchBuild", "transportTimeout", "transportError", "transportException", "transportConsecutive", "transportLastOutcome"} {
+		if strings.Contains(encoded, field) {
+			t.Fatalf("public event leaked %q in %s", field, encoded)
+		}
 	}
 }
 

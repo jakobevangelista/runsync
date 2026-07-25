@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 
 @MainActor
 final class AppContainer {
@@ -69,6 +70,20 @@ final class AppContainer {
             self.start()
             guard let startupTask = self.startupTask else { return }
             if await startupTask.value { self.garmin.applicationBecameActive() }
+        }
+    }
+
+    func scenePhaseChanged(_ phase: ScenePhase) {
+        switch phase {
+        case .active:
+            model.persistDiagnostic("scene_active")
+            applicationBecameActive()
+        case .inactive:
+            model.persistDiagnostic("scene_inactive")
+        case .background:
+            model.persistDiagnostic("scene_background")
+        @unknown default:
+            model.persistDiagnostic("scene_unknown")
         }
     }
 }

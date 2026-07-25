@@ -48,4 +48,44 @@ Retain daily, weekly, and monthly copies according to the homelab backup policy 
 - SSE reconnect loops: verify Cloudflare/Caddy buffering and idle behavior, viewer expiry, and `Last-Event-ID` replay.
 - Compromised token: revoke it immediately, create a replacement, and review `last_used_at` without exposing token material.
 
+For a telemetry cutoff on a known activity, correlate private watch transport diagnostics without selecting location or physiological values:
+
+```sql
+WITH ordered AS (
+  SELECT
+    phone_received_at,
+    server_received_at,
+    watch_sequence,
+    watch_build_id,
+    transport_timeout_count,
+    transport_error_count,
+    transport_exception_count,
+    transport_consecutive_failures,
+    transport_last_outcome,
+    lag(phone_received_at) OVER (ORDER BY phone_received_at, envelope_id) AS previous_phone_received_at,
+    lag(watch_sequence) OVER (ORDER BY phone_received_at, envelope_id) AS previous_watch_sequence
+  FROM telemetry_samples
+  WHERE activity_id = $1
+  ORDER BY phone_received_at, envelope_id
+)
+SELECT
+  phone_received_at,
+  watch_sequence,
+  watch_build_id,
+  transport_timeout_count,
+  transport_error_count,
+  transport_exception_count,
+  transport_consecutive_failures,
+  transport_last_outcome,
+  server_received_at - phone_received_at AS phone_to_server_delay,
+  phone_received_at - previous_phone_received_at AS receipt_gap,
+  watch_sequence - previous_watch_sequence AS sequence_delta
+FROM ordered
+WHERE previous_phone_received_at IS NULL
+   OR phone_received_at - previous_phone_received_at > interval '10 seconds'
+   OR watch_sequence - previous_watch_sequence > 1
+   OR transport_consecutive_failures > 0
+ORDER BY phone_received_at;
+```
+
 The in-process SSE hub supports one API replica. Before scaling horizontally, add a committed cross-instance mechanism such as PostgreSQL `LISTEN/NOTIFY` or a transactional outbox.

@@ -31,4 +31,12 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         }
         AppContainer.shared.backgroundUploader.handleEvents(completionHandler: completionHandler)
     }
+
+    func applicationDidReceiveMemoryWarning(_ application: UIApplication) {
+        AppContainer.shared.model.persistDiagnostic("memory_warning")
+    }
+
+    func applicationProtectedDataWillBecomeUnavailable(_ application: UIApplication) {
+        AppContainer.shared.model.persistDiagnostic("protected_data_unavailable")
+    }
 }

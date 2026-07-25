@@ -6,6 +6,7 @@
         name="@Strings.AppName"
         entry="RunSyncApp"
         launcherIcon="@Drawables.LauncherIcon"
+        version="0.2.0"
         minSdkVersion="5.0.0">
         <iq:products>
             <iq:product id="fr965"/>

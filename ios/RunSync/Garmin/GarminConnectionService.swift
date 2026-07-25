@@ -80,17 +80,22 @@ final class GarminConnectionService: NSObject {
             uiOverrideDelegate: nil,
             stateRestorationIdentifier: RunSyncConstants.restorationIdentifier
         )
+        model.persistDiagnostic("garmin_sdk_initialized")
         replaceDevices(deviceStore.load(), persist: false)
+        model.persistDiagnostic("authorized_device_cache_restored", details: [
+            "count": "\(devicesByID.count)"
+        ])
         model.record("Restored \(devicesByID.count) authorized device(s)")
         Task { [weak self, ingestor] in
             do {
                 _ = await ingestor.captureChanged(enabled: settings.captureEnabled)
                 await ingestor.startConnectivityMonitoring()
-                let status = try await ingestor.applicationBecameActive()
+                _ = try await ingestor.applicationBecameActive()
                 let session = try await ingestor.currentActivitySession()
+                let restoredStatus = await ingestor.currentStatus()
                 let configurationState = await self?.serverConfiguration?.displayState()
                 await MainActor.run {
-                    self?.model.updateServerStatus(status)
+                    self?.model.updateServerStatus(restoredStatus)
                     self?.model.restoreSession(session)
                     if let configurationState {
                         self?.model.serverBaseURL = configurationState.baseURL
@@ -185,10 +190,11 @@ final class GarminConnectionService: NSObject {
         model.selectedCaptureDeviceID = settings.selectedDeviceID
         Task { [weak self, ingestor] in
             do {
-                let status = try await ingestor.applicationBecameActive()
+                _ = try await ingestor.applicationBecameActive()
                 let session = try await ingestor.currentActivitySession()
+                let restoredStatus = await ingestor.currentStatus()
                 await MainActor.run {
-                    self?.model.updateServerStatus(status)
+                    self?.model.updateServerStatus(restoredStatus)
                     self?.model.restoreSession(session)
                 }
             } catch {
@@ -399,6 +405,9 @@ final class GarminConnectionService: NSObject {
         }
         for device in devices {
             model.record("Registering \(device.friendlyName ?? device.modelName ?? "Garmin device")")
+            model.persistDiagnostic("device_delegate_registered", details: [
+                "device": abbreviated(device.uuid.uuidString)
+            ])
             connectIQ.register(forDeviceEvents: device, delegate: self)
             guard let app = IQApp(
                 uuid: RunSyncConstants.manifestApplicationID,
@@ -407,6 +416,9 @@ final class GarminConnectionService: NSObject {
             ) else { continue }
             appsByDeviceID[device.uuid] = app
             connectIQ.register(forAppMessages: app, delegate: self)
+            model.persistDiagnostic("app_delegate_registered", details: [
+                "device": abbreviated(device.uuid.uuidString)
+            ])
         }
     }
 
@@ -418,9 +430,16 @@ final class GarminConnectionService: NSObject {
                 if let status {
                     self.model.fieldStatus = status.isInstalled ? "Installed" : "Missing"
                     self.model.record("Data field status: \(status.isInstalled ? "installed" : "missing")")
+                    self.model.persistDiagnostic("app_status_request_completed", details: [
+                        "device": abbreviated(device.uuid.uuidString),
+                        "installed": "\(status.isInstalled)"
+                    ])
                 } else {
                     self.model.fieldStatus = "Unknown"
                     self.model.record("Data field status request failed")
+                    self.model.persistDiagnostic("app_status_request_failed", details: [
+                        "device": abbreviated(device.uuid.uuidString)
+                    ])
                 }
             }
         }
@@ -435,6 +454,10 @@ final class GarminConnectionService: NSObject {
 
 }
 
+private func abbreviated(_ value: String) -> String {
+    String(value.prefix(8))
+}
+
 extension GarminConnectionService: IQDeviceEventDelegate {
     nonisolated func deviceStatusChanged(_ device: IQDevice!, status: IQDeviceStatus) {
         let label: String
@@ -446,8 +469,15 @@ extension GarminConnectionService: IQDeviceEventDelegate {
         case .connected: label = "Connected, discovering"
         @unknown default: label = "Unknown"
         }
+        let deviceTag = device?.uuid.uuidString
         Task { @MainActor [weak self] in self?.model.watchStatus = label }
-        Task { @MainActor [weak self] in self?.model.record("Watch status: \(label)") }
+        Task { @MainActor [weak self] in
+            self?.model.record("Watch status: \(label)")
+            self?.model.persistDiagnostic("device_status_changed", details: [
+                "device": deviceTag.map(abbreviated) ?? "unknown",
+                "status": label
+            ])
+        }
     }
 
     nonisolated func deviceCharacteristicsDiscovered(_ device: IQDevice!) {
@@ -455,6 +485,9 @@ extension GarminConnectionService: IQDeviceEventDelegate {
             guard let self, let device else { return }
             self.model.watchStatus = "Ready: \(device.friendlyName ?? device.modelName ?? "Garmin")"
             self.model.record("Watch characteristics discovered")
+            self.model.persistDiagnostic("device_characteristics_discovered", details: [
+                "device": abbreviated(device.uuid.uuidString)
+            ])
             self.updateAppStatus(for: device)
         }
     }
@@ -465,9 +498,14 @@ extension GarminConnectionService: IQAppMessageDelegate {
         let callbackTime = Date()
         guard let message else { return }
         do {
-            let sample = try GarminMessageDecoder.decode(message)
+            let decoded = try GarminMessageDecoder.decode(message)
             guard let deviceID = app?.device?.uuid else { return }
-            guard receiptPipeline.enqueue(sample, from: deviceID, at: callbackTime) else {
+            for warning in decoded.warnings {
+                Task { @MainActor [weak self] in
+                    self?.model.invalidWatchDiagnostic(warning, sequence: decoded.sample.sequence)
+                }
+            }
+            guard receiptPipeline.enqueue(decoded.sample, from: deviceID, at: callbackTime) else {
                 Task { @MainActor [weak self] in
                     self?.stopCaptureAfterQueueFailure()
                 }

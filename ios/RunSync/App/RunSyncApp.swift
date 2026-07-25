@@ -16,7 +16,7 @@ struct RunSyncApp: App {
                     )
                 }
                 .onChange(of: scenePhase) { _, phase in
-                    if phase == .active { AppContainer.shared.applicationBecameActive() }
+                    AppContainer.shared.scenePhaseChanged(phase)
                 }
         }
     }

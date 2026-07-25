@@ -3,12 +3,16 @@ package telemetry
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"time"
 
 	"github.com/google/uuid"
 )
 
 const MaxBatch = 100
+const maxDiagnosticCounter = 2147483647
+
+var watchBuildIDPattern = regexp.MustCompile(`^[A-Za-z0-9._+-]{1,32}$`)
 
 type ValidationCode string
 
@@ -45,20 +49,26 @@ type Envelope struct {
 }
 
 type Sample struct {
-	ProtocolVersion           int    `json:"protocolVersion"`
-	Sequence                  int    `json:"sequence"`
-	State                     int16  `json:"state"`
-	ActivityStartEpochSeconds *int   `json:"activityStartEpochSeconds,omitempty"`
-	ElapsedTimeMilliseconds   *int   `json:"elapsedTimeMilliseconds,omitempty"`
-	DistanceDecimeters        *int   `json:"distanceDecimeters,omitempty"`
-	SpeedMillimetersPerSecond *int   `json:"speedMillimetersPerSecond,omitempty"`
-	HeartRateBPM              *int   `json:"heartRateBPM,omitempty"`
-	CadenceRPM                *int   `json:"cadenceRPM,omitempty"`
-	LatitudeMicrodegrees      *int   `json:"latitudeMicrodegrees,omitempty"`
-	LongitudeMicrodegrees     *int   `json:"longitudeMicrodegrees,omitempty"`
-	GPSQuality                *int16 `json:"gpsQuality,omitempty"`
-	AltitudeDecimeters        *int   `json:"altitudeDecimeters,omitempty"`
-	TotalAscentMeters         *int   `json:"totalAscentMeters,omitempty"`
+	ProtocolVersion              int     `json:"protocolVersion"`
+	Sequence                     int     `json:"sequence"`
+	State                        int16   `json:"state"`
+	ActivityStartEpochSeconds    *int    `json:"activityStartEpochSeconds,omitempty"`
+	ElapsedTimeMilliseconds      *int    `json:"elapsedTimeMilliseconds,omitempty"`
+	DistanceDecimeters           *int    `json:"distanceDecimeters,omitempty"`
+	SpeedMillimetersPerSecond    *int    `json:"speedMillimetersPerSecond,omitempty"`
+	HeartRateBPM                 *int    `json:"heartRateBPM,omitempty"`
+	CadenceRPM                   *int    `json:"cadenceRPM,omitempty"`
+	LatitudeMicrodegrees         *int    `json:"latitudeMicrodegrees,omitempty"`
+	LongitudeMicrodegrees        *int    `json:"longitudeMicrodegrees,omitempty"`
+	GPSQuality                   *int16  `json:"gpsQuality,omitempty"`
+	AltitudeDecimeters           *int    `json:"altitudeDecimeters,omitempty"`
+	TotalAscentMeters            *int    `json:"totalAscentMeters,omitempty"`
+	WatchBuildID                 *string `json:"watchBuildID,omitempty"`
+	TransportTimeoutCount        *int    `json:"transportTimeoutCount,omitempty"`
+	TransportErrorCount          *int    `json:"transportErrorCount,omitempty"`
+	TransportExceptionCount      *int    `json:"transportExceptionCount,omitempty"`
+	TransportConsecutiveFailures *int    `json:"transportConsecutiveFailures,omitempty"`
+	TransportLastOutcome         *int16  `json:"transportLastOutcome,omitempty"`
 }
 
 func (b Batch) Validate(now time.Time) error {
@@ -142,6 +152,22 @@ func (s Sample) Validate() error {
 	}
 	if err := bounded("altitudeDecimeters", s.AltitudeDecimeters, -2147483648, 2147483647); err != nil {
 		return err
+	}
+	if s.WatchBuildID != nil && !watchBuildIDPattern.MatchString(*s.WatchBuildID) {
+		return validationError(ValidationInvalidEnvelope, nil, "watchBuildID is invalid")
+	}
+	for name, value := range map[string]*int{
+		"transportTimeoutCount":        s.TransportTimeoutCount,
+		"transportErrorCount":          s.TransportErrorCount,
+		"transportExceptionCount":      s.TransportExceptionCount,
+		"transportConsecutiveFailures": s.TransportConsecutiveFailures,
+	} {
+		if err := bounded(name, value, 0, maxDiagnosticCounter); err != nil {
+			return err
+		}
+	}
+	if s.TransportLastOutcome != nil && (*s.TransportLastOutcome < 0 || *s.TransportLastOutcome > 4) {
+		return validationError(ValidationInvalidEnvelope, nil, "transportLastOutcome is out of range")
 	}
 	return nil
 }
