@@ -80,10 +80,13 @@ final class AppContainer {
             applicationBecameActive()
         case .inactive:
             model.persistDiagnostic("scene_inactive")
+            garmin.applicationBecameInactive()
         case .background:
             model.persistDiagnostic("scene_background")
+            garmin.applicationBecameInactive()
         @unknown default:
             model.persistDiagnostic("scene_unknown")
+            garmin.applicationBecameInactive()
         }
     }
 }

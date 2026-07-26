@@ -62,8 +62,12 @@ struct StatusView: View {
             )
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
                 statusCell("Authorization", model.authorizationStatus)
+                statusCell("iOS build", model.iOSBuildID)
                 statusCell("Watch", model.watchStatus)
                 statusCell("Data field", model.fieldStatus)
+                statusCell("App messages", model.watchMessageStatus)
+                statusCell("Registration", "Generation \(model.registrationGeneration)")
+                statusCell("Transport repair", model.transportRepairStatus)
                 statusCell("Capture", model.captureEnabled ? "Enabled" : "Disabled")
                 statusCell("Garmin activity", model.activityStatus)
                 statusCell("RunSync session", model.runSyncSessionStatus)
@@ -260,9 +264,10 @@ struct StatusView: View {
     }
 
     private func recoveryText(_ result: GarminRecoveryResult) -> String {
+        let transport = "Watch: \(result.transport.outcome.label)"
         let capture = result.captureResumed ? "Capture resumed" : "Capture remains paused"
         let pending = "\(result.pendingEnvelopeCount) pending"
-        return "\(capture). \(pending). Upload: \(result.uploadState.label)."
+        return "\(transport). \(capture). \(pending). Upload: \(result.uploadState.label)."
     }
 
     private func relativeDate(_ date: Date?) -> String {

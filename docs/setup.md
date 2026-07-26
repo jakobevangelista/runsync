@@ -131,6 +131,40 @@ On the Forerunner 965:
 9. Start with a five-minute foreground-phone test.
 10. Follow with a 30-minute locked-screen test after foreground delivery is stable.
 
+## Connect IQ transport recovery test
+
+The app now tracks Garmin device connectivity and Connect IQ app-message
+delivery separately. **Watch: Ready** is not proof that app messages are
+arriving; **App messages: Receiving** and an increasing **Received** count are
+the end-to-end phone receipt signals.
+
+Run this test before relying on automatic recovery:
+
+1. Start a Garmin Run with the RunSync field visible and confirm **App messages:
+   Receiving**.
+2. Turn Bluetooth off in iPhone Settings for 60 seconds.
+3. Confirm the watch's transport failure count rises.
+4. Turn Bluetooth back on and leave the Garmin activity running.
+5. Bring RunSync to the foreground if iOS has suspended it.
+6. Wait up to 60 seconds. RunSync first replaces the app-message registration,
+   then replaces both device and app registrations if no valid receipt arrives.
+7. Require **App messages: Receiving**, an increased **Registration**
+   generation, and an increasing **Received** count.
+8. If it remains unavailable, press **Recover & Retry** once. The result must
+   say either **Watch: Recovered** or **Watch: Re-registered; waiting for
+   telemetry** when no activity is producing samples.
+9. If RunSync displays **Garmin authorization required**, press **Authorize
+   Garmin Watch** and select the watch. Authorization success alone is not
+   recovery; require a new receipt.
+
+Do not end or restart the Garmin activity during this test. Once repaired,
+RunSync resumes with the newest live telemetry. Samples superseded on the watch
+during the outage are not replayed.
+
+Force-quitting RunSync prevents normal iOS Bluetooth restoration relaunch.
+Reopen it manually; the foreground stale check will then run. A locked or
+normally backgrounded app is a separate test from a user force-quit.
+
 ## Important identifiers
 
 ```text
