@@ -36,6 +36,30 @@ To advance the server:
 Never reuse a commit-specific tag for different source. Keep the previous image
 available until the new API and migration are verified.
 
+### Viewer capacity
+
+The API has fixed in-process SSE ceilings of 50 connections per trusted-proxy-
+resolved client IP, 150 per channel, and 200 globally. They provide reconnect
+headroom around the 100-viewer deployment target and prevent unbounded socket
+and goroutine use. They are resource ceilings, not authentication or complete
+DDoS protection, and are intentionally code constants rather than deployment
+configuration. A rejected stream receives `429 Too Many Requests` with
+`Retry-After`; the existing web session issuance limit remains 20 requests per
+IP per minute.
+
+Each stream reuses the location policy loaded and clamped when it connects.
+Viewer tokens last at most five minutes, open streams close at expiry, and the
+browser reconnect obtains the current policy. Do not add policy polling to the
+telemetry fan-out path. If immediate revocation is needed later, add an explicit
+policy-change control event.
+
+The API also caches full bootstraps for 30 seconds and coalesces concurrent
+misses. Cache identity includes the channel, active activity, effective policy,
+and coordinate precision. Committed telemetry invalidates affected entries
+before live publication, so this cache does not replace SSE replay or its
+high-water consistency contract. Both the SSE registry and bootstrap cache are
+per-process; the deployment remains intentionally single-instance.
+
 To use a shared Caddy, attach both `api` and `web` to the shared external proxy network, copy the host matchers from `server/Caddyfile`, point both tunnel hostnames at that Caddy, and omit the bundled `caddy` service. The API does not trust proxy headers unless the proxy address is included in `RUNSYNC_TRUSTED_PROXY_CIDRS`.
 
 ## Credentials

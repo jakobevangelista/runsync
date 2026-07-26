@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jakobevangelista/runsync/server/internal/auth"
 	"github.com/jakobevangelista/runsync/server/internal/database"
+	"github.com/jakobevangelista/runsync/server/internal/live"
 	"github.com/jakobevangelista/runsync/server/internal/telemetry"
 )
 
@@ -38,8 +39,12 @@ func TestTelemetryValidationAndLaterIsolatedBatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	suffix := uuid.New().String()[:8]
-	userID, credentialID := uuid.New(), uuid.New()
+	userID, credentialID, channelID := uuid.New(), uuid.New(), uuid.New()
+	channelSlug := "telemetry-api-" + suffix
 	if _, err := pool.Exec(ctx, `INSERT INTO users(id,handle) VALUES($1,$2)`, userID, "telemetry-api-"+suffix); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO live_channels(id,user_id,slug,display_name,location_policy) VALUES($1,$2,$3,'Telemetry API','hidden')`, channelID, userID, channelSlug); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, `INSERT INTO api_credentials(id,user_id,name,token_prefix,token_hash,scopes) VALUES($1,$2,'telemetry-api',$3,$4,ARRAY['telemetry:write'])`, credentialID, userID, prefix, hash); err != nil {
@@ -59,7 +64,8 @@ func TestTelemetryValidationAndLaterIsolatedBatch(t *testing.T) {
 		}
 	})
 
-	server := httptest.NewServer(New(pool, bytes.Repeat([]byte{1}, 32), nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil))).Handler())
+	signingKey := bytes.Repeat([]byte{1}, 32)
+	server := httptest.NewServer(New(pool, signingKey, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil))).Handler())
 	defer server.Close()
 	post := func(value any) (*http.Response, []byte) {
 		t.Helper()
@@ -123,5 +129,66 @@ func TestTelemetryValidationAndLaterIsolatedBatch(t *testing.T) {
 	var count int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM telemetry_samples WHERE user_id=$1`, userID).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("stored samples=%d err=%v", count, err)
+	}
+
+	viewerNow := time.Now().UTC()
+	viewerToken, err := auth.SignViewer(signingKey, auth.ViewerClaims{
+		ChannelID: channelID,
+		UserID:    userID,
+		Slug:      channelSlug,
+		Policy:    "hidden",
+		IssuedAt:  viewerNow.Unix(),
+		ExpiresAt: viewerNow.Add(time.Minute).Unix(),
+		Scope:     "channel:live",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bootstrap := func() live.Bootstrap {
+		t.Helper()
+		request, err := http.NewRequest(http.MethodGet, server.URL+"/v1/channels/"+channelSlug+"/bootstrap", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Header.Set("Authorization", "Bearer "+viewerToken)
+		response, err := server.Client().Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer response.Body.Close()
+		var value live.Bootstrap
+		if err := json.NewDecoder(response.Body).Decode(&value); err != nil {
+			t.Fatal(err)
+		}
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("bootstrap status=%d value=%#v", response.StatusCode, value)
+		}
+		return value
+	}
+	firstBootstrap := bootstrap()
+	if firstBootstrap.Snapshot.Latest == nil ||
+		firstBootstrap.Snapshot.Latest.EnvelopeID != validID ||
+		firstBootstrap.ReplayAfterEnvelopeID == nil ||
+		*firstBootstrap.ReplayAfterEnvelopeID != validID {
+		t.Fatalf("first bootstrap=%#v", firstBootstrap)
+	}
+	if cached := bootstrap(); cached.ReplayAfterEnvelopeID == nil || *cached.ReplayAfterEnvelopeID != validID {
+		t.Fatalf("cached bootstrap=%#v", cached)
+	}
+
+	later := valid
+	later.EnvelopeID = uuid.New()
+	later.PhoneReceivedAt = now.Add(time.Second)
+	later.Sample.Sequence++
+	response, body = post(telemetry.Batch{InstallationID: installationID, Envelopes: []telemetry.Envelope{later}})
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("later telemetry: status=%d body=%s", response.StatusCode, body)
+	}
+	afterTelemetry := bootstrap()
+	if afterTelemetry.Snapshot.Latest == nil ||
+		afterTelemetry.Snapshot.Latest.EnvelopeID != later.EnvelopeID ||
+		afterTelemetry.ReplayAfterEnvelopeID == nil ||
+		*afterTelemetry.ReplayAfterEnvelopeID != later.EnvelopeID {
+		t.Fatalf("telemetry did not invalidate bootstrap=%#v", afterTelemetry)
 	}
 }

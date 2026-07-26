@@ -27,16 +27,18 @@ import (
 const maxBody = 256 << 10
 
 type Server struct {
-	pool    *pgxpool.Pool
-	ingest  *ingest.Store
-	live    liveStore
-	hub     *live.Hub
-	key     []byte
-	origins map[string]struct{}
-	proxies []netip.Prefix
-	logger  *slog.Logger
-	limiter *limiter
-	ingests *userLocks
+	pool       *pgxpool.Pool
+	ingest     *ingest.Store
+	live       liveStore
+	hub        *live.Hub
+	key        []byte
+	origins    map[string]struct{}
+	proxies    []netip.Prefix
+	logger     *slog.Logger
+	limiter    *limiter
+	ingests    *userLocks
+	streams    *sseConnectionRegistry
+	bootstraps *bootstrapCache
 }
 
 type liveStore interface {
@@ -48,7 +50,20 @@ type liveStore interface {
 }
 
 func New(pool *pgxpool.Pool, key []byte, origins map[string]struct{}, proxies []netip.Prefix, logger *slog.Logger) *Server {
-	return &Server{pool: pool, ingest: ingest.New(pool), live: live.NewStore(pool), hub: live.NewHub(32), key: key, origins: origins, proxies: proxies, logger: logger, limiter: newLimiter(120, 200), ingests: newUserLocks()}
+	return &Server{
+		pool:       pool,
+		ingest:     ingest.New(pool),
+		live:       live.NewStore(pool),
+		hub:        live.NewHub(32),
+		key:        key,
+		origins:    origins,
+		proxies:    proxies,
+		logger:     logger,
+		limiter:    newLimiter(120, 200),
+		ingests:    newUserLocks(),
+		streams:    newSSEConnectionRegistry(),
+		bootstraps: newBootstrapCache(),
+	}
 }
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -116,10 +131,26 @@ func (s *Server) batch(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	s.bootstraps.invalidate(affectedChannels(result))
 	s.publishIngest(result)
 	unlock()
 	writeJSON(w, 200, map[string]any{"acknowledgedEnvelopeIds": result.Acknowledged, "serverTime": now})
 }
+
+func affectedChannels(result ingest.Result) []uuid.UUID {
+	seen := map[uuid.UUID]struct{}{}
+	for _, channels := range result.Channels {
+		for _, channel := range channels {
+			seen[channel] = struct{}{}
+		}
+	}
+	out := make([]uuid.UUID, 0, len(seen))
+	for channel := range seen {
+		out = append(out, channel)
+	}
+	return out
+}
+
 func (s *Server) publishIngest(result ingest.Result) {
 	for _, event := range result.Transitions {
 		for _, channel := range result.Channels[event.Envelope.ActivityID] {
@@ -143,7 +174,7 @@ func (s *Server) bootstrap(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	out, err := s.live.Bootstrap(r.Context(), c, time.Now().UTC())
+	out, err := s.bootstraps.get(r.Context(), c, time.Now().UTC(), s.live.Bootstrap)
 	if err != nil {
 		s.channelError(w, err)
 		return
@@ -252,6 +283,13 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 		unauthorized(w)
 		return
 	}
+	release, ok := s.streams.acquire(s.clientIP(r), claims.ChannelID)
+	if !ok {
+		w.Header().Set("Retry-After", "1")
+		writeError(w, http.StatusTooManyRequests, "stream_capacity_exceeded", "live stream capacity exceeded")
+		return
+	}
+	defer release()
 	sub := s.hub.Subscribe(claims.ChannelID)
 	defer sub.Close()
 	c, err := s.live.Channel(r.Context(), claims.UserID, claims.Slug)
@@ -260,8 +298,14 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	clampChannel(&c, claims)
-	_, ok := w.(http.Flusher)
-	if !ok {
+	// Viewer tokens expire after five minutes, and existing streams are closed
+	// when their token expires. Policy changes are therefore picked up when the
+	// browser obtains a new token and reconnects. Keeping this effective policy
+	// for the connection lifetime intentionally removes database work from the
+	// per-sample fan-out path. If immediate policy revocation becomes necessary,
+	// add an explicit policy-change control event instead of polling PostgreSQL.
+	_, streamingSupported := w.(http.Flusher)
+	if !streamingSupported {
 		writeError(w, 500, "stream_unsupported", "streaming unsupported")
 		return
 	}
@@ -356,12 +400,7 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 			}
-			current, e := s.live.Channel(r.Context(), claims.UserID, claims.Slug)
-			if e != nil {
-				return
-			}
-			clampChannel(&current, claims)
-			event := live.EventView(message.Event, current.Policy, current.Decimals)
+			event := live.EventView(message.Event, c.Policy, c.Decimals)
 			if send(message.Kind, event.EnvelopeID.String(), event) != nil {
 				return
 			}

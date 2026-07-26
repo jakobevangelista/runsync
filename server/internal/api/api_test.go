@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"runtime"
 	"strings"
 	"sync"
@@ -281,6 +282,7 @@ func waitForUserLockRefs(t *testing.T, locks *userLocks, user uuid.UUID, want in
 
 type stubLiveStore struct {
 	channel func(context.Context, uuid.UUID, string) (live.Channel, error)
+	replay  func(context.Context, live.Channel, uuid.UUID, int) ([]live.SampleView, bool, error)
 }
 
 func (s *stubLiveStore) Channel(ctx context.Context, user uuid.UUID, slug string) (live.Channel, error) {
@@ -295,27 +297,43 @@ func (*stubLiveStore) Snapshot(context.Context, live.Channel, time.Time) (live.S
 func (*stubLiveStore) Route(context.Context, live.Channel, time.Time) (live.Route, error) {
 	return live.Route{}, nil
 }
-func (*stubLiveStore) Replay(context.Context, live.Channel, uuid.UUID, int) ([]live.SampleView, bool, error) {
+func (s *stubLiveStore) Replay(ctx context.Context, channel live.Channel, id uuid.UUID, limit int) ([]live.SampleView, bool, error) {
+	if s.replay != nil {
+		return s.replay(ctx, channel, id, limit)
+	}
 	return nil, false, nil
 }
 
-func TestStreamSubscribesBeforeActiveChannelLookup(t *testing.T) {
+func TestStreamLoadsChannelOnceAcrossAnyNumberOfTelemetryMessages(t *testing.T) {
 	key := bytes.Repeat([]byte{7}, 32)
-	channel := live.Channel{ID: uuid.New(), UserID: uuid.New(), Slug: "transition", Policy: "hidden"}
-	event := telemetry.Event{Envelope: telemetry.Envelope{EnvelopeID: uuid.New(), ActivityID: uuid.New(), Sample: telemetry.Sample{State: 1}}}
+	channel := live.Channel{ID: uuid.New(), UserID: uuid.New(), Slug: "one-lookup", Policy: "precise"}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	store := &stubLiveStore{}
-	server := &Server{live: store, hub: live.NewHub(4), key: key}
+	server := &Server{
+		live:    store,
+		hub:     live.NewHub(128),
+		key:     key,
+		streams: newSSEConnectionRegistry(),
+	}
 	lookups := 0
 	subscribedAtLookup := false
+	const messages = 64
+	events := make([]telemetry.Event, messages)
+	for index := range events {
+		events[index] = telemetry.Event{
+			Envelope: telemetry.Envelope{
+				EnvelopeID: uuid.New(),
+				ActivityID: uuid.New(),
+				Sample:     telemetry.Sample{State: 1},
+			},
+		}
+	}
 	store.channel = func(context.Context, uuid.UUID, string) (live.Channel, error) {
 		lookups++
-		if lookups == 1 {
-			subscribedAtLookup = server.hub.Count(channel.ID) == 1
-			server.hub.Publish(channel.ID, live.Message{Kind: "activity", Event: event})
-		} else {
-			cancel()
+		subscribedAtLookup = server.hub.Count(channel.ID) == 1
+		for _, event := range events {
+			server.hub.Publish(channel.ID, live.Message{Kind: "sample", Event: event})
 		}
 		return channel, nil
 	}
@@ -324,15 +342,361 @@ func TestStreamSubscribesBeforeActiveChannelLookup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := httptest.NewRequest(http.MethodGet, "/v1/channels/transition/stream", nil).WithContext(ctx)
+	request := httptest.NewRequest(http.MethodGet, "/v1/channels/one-lookup/stream", nil).WithContext(ctx)
 	request.SetPathValue("slug", channel.Slug)
 	request.Header.Set("Authorization", "Bearer "+token)
-	response := httptest.NewRecorder()
+	response := newStreamTestWriter(cancel, events[len(events)-1].Envelope.EnvelopeID.String())
 	server.stream(response, request)
 	if !subscribedAtLookup {
 		t.Fatal("stream was not subscribed during active-channel lookup")
 	}
-	if !strings.Contains(response.Body.String(), "event: activity") || !strings.Contains(response.Body.String(), event.Envelope.EnvelopeID.String()) {
-		t.Fatalf("transition published during lookup was lost: %q", response.Body.String())
+	if lookups != 1 {
+		t.Fatalf("channel lookups=%d, want 1", lookups)
+	}
+	if count := strings.Count(response.String(), "event: sample"); count != messages {
+		t.Fatalf("sample events=%d, want %d", count, messages)
+	}
+	assertEmptySSERegistry(t, server.streams)
+}
+
+func TestStreamEffectiveLocationPolicy(t *testing.T) {
+	roundedTwo, roundedThree, roundedFive := int16(2), int16(3), int16(5)
+	tests := []struct {
+		name            string
+		channelPolicy   string
+		channelDecimals *int16
+		tokenPolicy     string
+		tokenDecimals   *int16
+		wantLatitude    *int
+		wantLongitude   *int
+	}{
+		{"precise", "precise", nil, "precise", nil, intPointer(37774921), intPointer(-122419381)},
+		{"token rounds precise", "precise", nil, "rounded", &roundedTwo, intPointer(37770000), intPointer(-122420000)},
+		{"token hides precise", "precise", nil, "hidden", nil, nil, nil},
+		{"token cannot unround", "rounded", &roundedThree, "precise", nil, intPointer(37775000), intPointer(-122419000)},
+		{"token cannot add rounded precision", "rounded", &roundedThree, "rounded", &roundedFive, intPointer(37775000), intPointer(-122419000)},
+		{"token can reduce rounded precision", "rounded", &roundedThree, "rounded", &roundedTwo, intPointer(37770000), intPointer(-122420000)},
+		{"token cannot reveal hidden", "hidden", nil, "precise", nil, nil, nil},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			key := bytes.Repeat([]byte{8}, 32)
+			channel := live.Channel{
+				ID:       uuid.New(),
+				UserID:   uuid.New(),
+				Slug:     "policy",
+				Policy:   test.channelPolicy,
+				Decimals: test.channelDecimals,
+			}
+			latitude, longitude := 37774921, -122419381
+			event := telemetry.Event{Envelope: telemetry.Envelope{
+				EnvelopeID: uuid.New(),
+				ActivityID: uuid.New(),
+				Sample: telemetry.Sample{
+					State:                 1,
+					LatitudeMicrodegrees:  &latitude,
+					LongitudeMicrodegrees: &longitude,
+				},
+			}}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			lookups := 0
+			server := &Server{
+				hub:     live.NewHub(4),
+				key:     key,
+				streams: newSSEConnectionRegistry(),
+			}
+			server.live = &stubLiveStore{channel: func(context.Context, uuid.UUID, string) (live.Channel, error) {
+				lookups++
+				server.hub.Publish(channel.ID, live.Message{Kind: "sample", Event: event})
+				return channel, nil
+			}}
+			now := time.Now()
+			token, err := auth.SignViewer(key, auth.ViewerClaims{
+				ChannelID: channel.ID,
+				UserID:    channel.UserID,
+				Slug:      channel.Slug,
+				Policy:    test.tokenPolicy,
+				Decimals:  test.tokenDecimals,
+				IssuedAt:  now.Unix(),
+				ExpiresAt: now.Add(time.Minute).Unix(),
+				Scope:     "channel:live",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := httptest.NewRequest(http.MethodGet, "/v1/channels/policy/stream", nil).WithContext(ctx)
+			request.SetPathValue("slug", channel.Slug)
+			request.Header.Set("Authorization", "Bearer "+token)
+			response := newStreamTestWriter(cancel, event.Envelope.EnvelopeID.String())
+			server.stream(response, request)
+			view := decodeSSESample(t, response.String())
+			if lookups != 1 {
+				t.Fatalf("channel lookups=%d, want 1", lookups)
+			}
+			assertOptionalInt(t, "latitude", view.LatitudeMicrodegrees, test.wantLatitude)
+			assertOptionalInt(t, "longitude", view.LongitudeMicrodegrees, test.wantLongitude)
+			assertEmptySSERegistry(t, server.streams)
+		})
 	}
 }
+
+func TestInvalidViewerTokenDoesNotConsumeSSECapacity(t *testing.T) {
+	server := &Server{
+		key:     bytes.Repeat([]byte{9}, 32),
+		streams: newSSEConnectionRegistry(),
+	}
+	request := httptest.NewRequest(http.MethodGet, "/v1/channels/live/stream", nil)
+	request.SetPathValue("slug", "live")
+	request.Header.Set("Authorization", "Bearer invalid")
+	response := httptest.NewRecorder()
+	server.stream(response, request)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("status=%d", response.Code)
+	}
+	assertEmptySSERegistry(t, server.streams)
+}
+
+func TestStreamCapacityRejectionReturns429WithoutPartialAcquire(t *testing.T) {
+	key := bytes.Repeat([]byte{10}, 32)
+	channel := live.Channel{ID: uuid.New(), UserID: uuid.New(), Slug: "capacity", Policy: "hidden"}
+	registry := newSSEConnectionRegistryWithLimits(sseConnectionLimits{
+		perIP:      1,
+		perChannel: 2,
+		global:     2,
+	})
+	release, ok := registry.acquire("192.0.2.1", channel.ID)
+	if !ok {
+		t.Fatal("fixture acquire rejected")
+	}
+	defer release()
+	lookups := 0
+	server := &Server{
+		key:     key,
+		hub:     live.NewHub(4),
+		streams: registry,
+		live: &stubLiveStore{channel: func(context.Context, uuid.UUID, string) (live.Channel, error) {
+			lookups++
+			return channel, nil
+		}},
+	}
+	now := time.Now()
+	token, err := auth.SignViewer(key, auth.ViewerClaims{
+		ChannelID: channel.ID,
+		UserID:    channel.UserID,
+		Slug:      channel.Slug,
+		Policy:    channel.Policy,
+		IssuedAt:  now.Unix(),
+		ExpiresAt: now.Add(time.Minute).Unix(),
+		Scope:     "channel:live",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/v1/channels/capacity/stream", nil)
+	request.RemoteAddr = "192.0.2.1:1234"
+	request.SetPathValue("slug", channel.Slug)
+	request.Header.Set("Authorization", "Bearer "+token)
+	response := httptest.NewRecorder()
+	server.stream(response, request)
+	if response.Code != http.StatusTooManyRequests || response.Header().Get("Retry-After") != "1" {
+		t.Fatalf("status=%d retry-after=%q", response.Code, response.Header().Get("Retry-After"))
+	}
+	if lookups != 0 {
+		t.Fatalf("channel lookups=%d after capacity rejection", lookups)
+	}
+	counts := registry.counts()
+	if counts.total != 1 || counts.byIP["192.0.2.1"] != 1 || counts.byChannel[channel.ID] != 1 {
+		t.Fatalf("capacity rejection changed registry=%#v", counts)
+	}
+}
+
+func TestStreamReleasesCapacityOnEarlyExitPaths(t *testing.T) {
+	key := bytes.Repeat([]byte{11}, 32)
+	channel := live.Channel{ID: uuid.New(), UserID: uuid.New(), Slug: "release", Policy: "hidden"}
+	now := time.Now()
+	token, err := auth.SignViewer(key, auth.ViewerClaims{
+		ChannelID: channel.ID,
+		UserID:    channel.UserID,
+		Slug:      channel.Slug,
+		Policy:    channel.Policy,
+		IssuedAt:  now.Unix(),
+		ExpiresAt: now.Add(time.Minute).Unix(),
+		Scope:     "channel:live",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name       string
+		store      *stubLiveStore
+		writer     http.ResponseWriter
+		lastEvent  string
+		wantStatus int
+	}{
+		{
+			name: "channel rejected",
+			store: &stubLiveStore{channel: func(context.Context, uuid.UUID, string) (live.Channel, error) {
+				return live.Channel{}, live.ErrNotFound
+			}},
+			writer:     httptest.NewRecorder(),
+			wantStatus: http.StatusUnauthorized,
+		},
+		{
+			name: "stream unsupported",
+			store: &stubLiveStore{channel: func(context.Context, uuid.UUID, string) (live.Channel, error) {
+				return channel, nil
+			}},
+			writer:     newNonFlusherWriter(),
+			wantStatus: http.StatusInternalServerError,
+		},
+		{
+			name: "invalid replay position",
+			store: &stubLiveStore{channel: func(context.Context, uuid.UUID, string) (live.Channel, error) {
+				return channel, nil
+			}},
+			writer:     httptest.NewRecorder(),
+			lastEvent:  "not-a-uuid",
+			wantStatus: http.StatusOK,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			registry := newSSEConnectionRegistry()
+			server := &Server{
+				key:     key,
+				hub:     live.NewHub(4),
+				streams: registry,
+				live:    test.store,
+			}
+			request := httptest.NewRequest(http.MethodGet, "/v1/channels/release/stream", nil)
+			request.SetPathValue("slug", channel.Slug)
+			request.Header.Set("Authorization", "Bearer "+token)
+			if test.lastEvent != "" {
+				request.Header.Set("Last-Event-ID", test.lastEvent)
+			}
+			server.stream(test.writer, request)
+			status := responseStatus(test.writer)
+			if status != test.wantStatus {
+				t.Fatalf("status=%d, want %d", status, test.wantStatus)
+			}
+			assertEmptySSERegistry(t, registry)
+			if server.hub.Count(channel.ID) != 0 {
+				t.Fatalf("hub retained subscription")
+			}
+		})
+	}
+}
+
+func TestClientIPUsesOnlyTrustedProxyHeaders(t *testing.T) {
+	trusted := netip.MustParsePrefix("10.0.0.0/8")
+	server := &Server{proxies: []netip.Prefix{trusted}}
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request.RemoteAddr = "10.1.2.3:1234"
+	request.Header.Set("X-Forwarded-For", "203.0.113.8, 10.1.2.3")
+	if got := server.clientIP(request); got != "203.0.113.8" {
+		t.Fatalf("trusted proxy client IP=%q", got)
+	}
+	request.RemoteAddr = "192.0.2.9:1234"
+	request.Header.Set("X-Forwarded-For", "203.0.113.99")
+	if got := server.clientIP(request); got != "192.0.2.9" {
+		t.Fatalf("untrusted proxy client IP=%q", got)
+	}
+}
+
+type streamTestWriter struct {
+	mu     sync.Mutex
+	header http.Header
+	body   strings.Builder
+	cancel context.CancelFunc
+	stopAt string
+	status int
+}
+
+func newStreamTestWriter(cancel context.CancelFunc, stopAt string) *streamTestWriter {
+	return &streamTestWriter{
+		header: http.Header{},
+		cancel: cancel,
+		stopAt: stopAt,
+		status: http.StatusOK,
+	}
+}
+
+func (w *streamTestWriter) Header() http.Header { return w.header }
+
+func (w *streamTestWriter) WriteHeader(status int) { w.status = status }
+
+func (w *streamTestWriter) Write(data []byte) (int, error) {
+	w.mu.Lock()
+	written, err := w.body.Write(data)
+	shouldCancel := w.stopAt != "" && strings.Contains(w.body.String(), w.stopAt)
+	w.mu.Unlock()
+	if shouldCancel {
+		w.cancel()
+	}
+	return written, err
+}
+
+func (*streamTestWriter) Flush() {}
+
+func (w *streamTestWriter) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.body.String()
+}
+
+type nonFlusherWriter struct {
+	header http.Header
+	body   strings.Builder
+	status int
+}
+
+func newNonFlusherWriter() *nonFlusherWriter {
+	return &nonFlusherWriter{header: http.Header{}, status: http.StatusOK}
+}
+
+func (w *nonFlusherWriter) Header() http.Header            { return w.header }
+func (w *nonFlusherWriter) WriteHeader(status int)         { w.status = status }
+func (w *nonFlusherWriter) Write(data []byte) (int, error) { return w.body.Write(data) }
+
+func responseStatus(writer http.ResponseWriter) int {
+	switch value := writer.(type) {
+	case *httptest.ResponseRecorder:
+		return value.Code
+	case *nonFlusherWriter:
+		return value.status
+	default:
+		return http.StatusOK
+	}
+}
+
+func decodeSSESample(t *testing.T, body string) live.SampleView {
+	t.Helper()
+	for _, line := range strings.Split(body, "\n") {
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		var sample live.SampleView
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &sample); err != nil {
+			t.Fatal(err)
+		}
+		return sample
+	}
+	t.Fatalf("SSE sample missing from %q", body)
+	return live.SampleView{}
+}
+
+func assertOptionalInt(t *testing.T, name string, got, want *int) {
+	t.Helper()
+	if want == nil {
+		if got != nil {
+			t.Fatalf("%s=%d, want hidden", name, *got)
+		}
+		return
+	}
+	if got == nil || *got != *want {
+		t.Fatalf("%s=%v, want %d", name, got, *want)
+	}
+}
+
+func intPointer(value int) *int { return &value }

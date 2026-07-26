@@ -55,6 +55,20 @@ All bearer tokens belong in the `Authorization` header. SSE replay uses `Last-Ev
 
 Viewer-token expiry is enforced for already-open streams. Replay IDs remain envelope UUIDs, while the server resolves them to a durable per-user ingest cursor so delayed phone timestamps are not skipped. Bootstrap and legacy full routes are ordered by phone receipt time and envelope UUID, then deterministically downsampled to at most 5,000 points while preserving both endpoints. The browser also caps live rendered geometry at 5,000 points; this is a display bound, not an ingestion or retention limit.
 
+The single API process enforces fixed SSE resource ceilings of 50 connections
+per client IP, 150 per channel, and 200 globally. These constants target 100
+legitimate viewers while leaving reconnect and shared-household headroom; they
+are not authentication or complete DDoS protection. A stream loads and clamps
+its location policy once, then closes no later than its five-minute viewer-token
+expiry so a reconnect picks up policy changes without querying PostgreSQL for
+every telemetry sample.
+
+Bootstrap responses are cached in process for 30 seconds by channel, active
+activity, effective location policy, and coordinate precision. Concurrent misses
+are coalesced, and newly committed telemetry invalidates affected channel
+entries before the corresponding SSE event is published. The cache never stores
+viewer tokens, and HTTP responses remain `Cache-Control: no-store`.
+
 ## Proxy trust
 
 The Compose deployment keeps the API and web service on the internal `backend` network and Caddy on both `backend` and the isolated `edge` network with Cloudflare Tunnel. Caddy rejects unknown hosts, trusts private-network upstreams for `CF-Connecting-IP`, and preserves unbuffered API/SSE proxying. The API trusts private-network Caddy addresses for `X-Forwarded-For`. Do not publish the API, web, or Caddy container ports while using these defaults. If a service is exposed through another network path, set `RUNSYNC_TRUSTED_PROXY_CIDRS` to only the exact Caddy network/address and adjust Caddy's `trusted_proxies` to only the actual tunnel proxy addresses.

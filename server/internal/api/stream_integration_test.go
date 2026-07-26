@@ -20,7 +20,7 @@ import (
 	"github.com/jakobevangelista/runsync/server/internal/live"
 )
 
-func TestStreamClosesWhenViewerTokenExpires(t *testing.T) {
+func TestStreamClosesWhenViewerTokenExpiresAndFreshTokenReconnects(t *testing.T) {
 	databaseURL := os.Getenv("RUNSYNC_TEST_DATABASE_URL")
 	if databaseURL == "" {
 		t.Skip("RUNSYNC_TEST_DATABASE_URL not set")
@@ -52,7 +52,8 @@ func TestStreamClosesWhenViewerTokenExpires(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewServer(New(pool, key, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil))).Handler())
+	apiServer := New(pool, key, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	server := httptest.NewServer(apiServer.Handler())
 	defer server.Close()
 	req, err := http.NewRequest(http.MethodGet, server.URL+"/v1/channels/"+slug+"/stream", nil)
 	if err != nil {
@@ -75,6 +76,38 @@ func TestStreamClosesWhenViewerTokenExpires(t *testing.T) {
 	if elapsed < 500*time.Millisecond || elapsed > 3*time.Second {
 		t.Fatalf("stream closed after %s", elapsed)
 	}
+	assertEmptySSERegistry(t, apiServer.streams)
+
+	reconnectNow := time.Now()
+	reconnectToken, err := auth.SignViewer(key, auth.ViewerClaims{
+		ChannelID: channelID,
+		UserID:    userID,
+		Slug:      slug,
+		Policy:    "hidden",
+		IssuedAt:  reconnectNow.Unix(),
+		ExpiresAt: reconnectNow.Add(time.Second).Unix(),
+		Scope:     "channel:live",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reconnectRequest, err := http.NewRequest(http.MethodGet, server.URL+"/v1/channels/"+slug+"/stream", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reconnectRequest.Header.Set("Authorization", "Bearer "+reconnectToken)
+	reconnectResponse, err := server.Client().Do(reconnectRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reconnectResponse.StatusCode != http.StatusOK {
+		t.Fatalf("reconnect status=%d", reconnectResponse.StatusCode)
+	}
+	if _, err := io.Copy(io.Discard, reconnectResponse.Body); err != nil {
+		t.Fatal(err)
+	}
+	_ = reconnectResponse.Body.Close()
+	assertEmptySSERegistry(t, apiServer.streams)
 }
 
 func TestReplayResetClosesAndBootstrapAdvancesHighWater(t *testing.T) {
