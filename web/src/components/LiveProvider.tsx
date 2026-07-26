@@ -14,6 +14,7 @@ import {
   type ActivityState,
 } from "../lib/activity-store";
 import { sampleSchema, sessionSchema, UUID, type LiveSession } from "../lib/contracts";
+import { liveSessionPath, type LiveAudience } from "../lib/live-access";
 import { reconnectDelay, streamSSE } from "../lib/sse";
 
 type LiveContextValue = {
@@ -23,7 +24,15 @@ type LiveContextValue = {
 
 const LiveContext = createContext<LiveContextValue | undefined>(undefined);
 
-export function LiveProvider({ overlayId, children }: { overlayId: string; children: ReactNode }) {
+export function LiveProvider({
+  audience,
+  accessId,
+  children,
+}: {
+  audience: LiveAudience;
+  accessId: string;
+  children: ReactNode;
+}) {
   const [state, dispatch] = useReducer(activityReducer, initialActivityState);
   const [session, setSession] = useReducer(
     (_: LiveSession | undefined, next: LiveSession | undefined) => next,
@@ -34,7 +43,7 @@ export function LiveProvider({ overlayId, children }: { overlayId: string; child
   useEffect(() => {
     const controller = new AbortController();
     void runLiveClient(
-      overlayId,
+      liveSessionPath(audience, accessId),
       controller.signal,
       dispatch,
       (next) => {
@@ -43,7 +52,7 @@ export function LiveProvider({ overlayId, children }: { overlayId: string; child
       replayCursor,
     );
     return () => controller.abort();
-  }, [overlayId]);
+  }, [accessId, audience]);
 
   useEffect(() => {
     const interval = window.setInterval(() => {
@@ -69,7 +78,7 @@ type LiveClientDependencies = {
 };
 
 export async function runLiveClient(
-  overlayId: string,
+  sessionPath: string,
   signal: AbortSignal,
   dispatch: Dispatch<ActivityAction>,
   onSession: (session: LiveSession) => void,
@@ -86,7 +95,7 @@ export async function runLiveClient(
     try {
       if (!session || needsBootstrap || Date.parse(session.expiresAt) - Date.now() < 30_000) {
         dispatch({ type: "connection", connection: session ? "reconnecting" : "connecting" });
-        session = await fetchSession(overlayId, signal, fetcher);
+        session = await fetchSession(sessionPath, signal, fetcher);
         replayCursor.current = session.replayAfterEnvelopeId ?? undefined;
         onSession(session);
         dispatch({ type: "bootstrap", session });
@@ -143,8 +152,8 @@ export async function runLiveClient(
   }
 }
 
-async function fetchSession(overlayId: string, signal: AbortSignal, fetcher: typeof fetch) {
-  const response = await fetcher(`/api/live/${encodeURIComponent(overlayId)}/session`, {
+async function fetchSession(sessionPath: string, signal: AbortSignal, fetcher: typeof fetch) {
+  const response = await fetcher(sessionPath, {
     method: "POST",
     headers: { Accept: "application/json" },
     cache: "no-store",

@@ -20,7 +20,23 @@ describe("server configuration and session broker", () => {
       return "rs_permanent\n";
     });
     expect(config.readToken).toBe("rs_permanent");
+    expect(config.shareId).toBe(environment.RUNSYNC_OVERLAY_ID);
+    expect(config.embedId).toBe(environment.RUNSYNC_OVERLAY_ID);
     expect(() => parseServerConfig(environment, () => "")).toThrow("empty");
+  });
+
+  it("supports independently rotatable share and embed identifiers", () => {
+    const shareId = "4eef2e4f-3908-4057-9a9d-8170667e7388";
+    const embedId = "3938d10d-127f-40fa-9d67-c19d8d7e7329";
+    const config = parseServerConfig(
+      { ...environment, RUNSYNC_SHARE_ID: shareId, RUNSYNC_EMBED_ID: embedId },
+      () => "token",
+    );
+    expect(config.shareId).toBe(shareId);
+    expect(config.embedId).toBe(embedId);
+    expect(() =>
+      parseServerConfig({ ...environment, RUNSYNC_SHARE_ID: "not-a-uuid" }, () => "token"),
+    ).toThrow();
   });
 
   it("accepts only public Mapbox tokens and requires a secure public API URL", () => {

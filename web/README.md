@@ -1,6 +1,6 @@
 # RunSync Web
 
-TanStack Start browser-source overlays for the current RunSync activity. The overlay UUID is a public, unlisted identifier; it is discovery resistance, not authentication.
+TanStack Start landing page, shareable current-run viewer, and browser-source overlays. Public identifiers are unlisted discovery resistance, not authentication.
 
 ## Toolchain
 
@@ -29,7 +29,7 @@ The app and tests work without a RunSync API credential or Mapbox token. Fixture
 RUNSYNC_USE_FIXTURES=true vp dev
 ```
 
-Open `http://localhost:3000/live/7a85db43-30ba-4de7-bb5e-7f2038937538/preview`.
+Open `http://localhost:3000/`. Fixture-mode share, embed, and studio identifiers fall back to `7a85db43-30ba-4de7-bb5e-7f2038937538` unless configured separately.
 
 ## Local End-to-End Development
 
@@ -40,6 +40,12 @@ After completing the one-time database and credential bootstrap in the root READ
 ```sh
 docker compose --env-file .env.local -f compose.yaml -f compose.dev.yaml up -d postgres api
 ```
+
+The API must already exist under the image pin selected by
+`RUNSYNC_API_IMAGE` (currently `runsync-api:8e74040a2676`). The normal Compose
+files do not build it. This makes both targeted web rebuilds and broad
+`docker compose up --build` runs safe for frontend iteration: neither can
+replace the pinned API with server source from the current frontend workspace.
 
 Then start the TanStack application with Vite+ HMR:
 
@@ -52,9 +58,9 @@ vp install --frozen-lockfile
 vp dev
 ```
 
-Open `http://localhost:3000/live/7a85db43-30ba-4de7-bb5e-7f2038937538/preview`. This path uses the real PostgreSQL database, the Go consistent-bootstrap endpoint, viewer-token exchange, and SSE stream. HTTP API URLs are accepted only for `localhost`, `127.0.0.1`, or `::1`; non-loopback deployments still require HTTPS.
+Open `http://localhost:3000/`, then follow the public-viewer or broadcast-tools link. These paths use the real PostgreSQL database, the Go consistent-bootstrap endpoint, viewer-token exchange, and SSE stream. HTTP API URLs are accepted only for `localhost`, `127.0.0.1`, or `::1`; non-loopback deployments still require HTTPS.
 
-For a production-like local container test instead of HMR, start `postgres api web caddy` with both Compose files and open `http://live.runsync.localhost:8080/live/7a85db43-30ba-4de7-bb5e-7f2038937538/preview`. Modern browsers resolve `*.localhost` to loopback without an `/etc/hosts` entry.
+For a production-like local container test instead of HMR, start `postgres api web caddy` with both Compose files and open `http://live.runsync.localhost:8080/`. Modern browsers resolve `*.localhost` to loopback without an `/etc/hosts` entry.
 
 ## Production Configuration
 
@@ -66,12 +72,16 @@ RUNSYNC_API_PUBLIC_URL=https://runsync-api.example.com
 RUNSYNC_API_READ_TOKEN_FILE=/run/secrets/runsync_web_read_token
 RUNSYNC_CHANNEL_SLUG=live
 RUNSYNC_OVERLAY_ID=<random UUID>
+RUNSYNC_SHARE_ID=<different random UUID, optional during migration>
+RUNSYNC_EMBED_ID=<different random UUID, optional during migration>
 RUNSYNC_DEFAULT_UNITS=imperial
 RUNSYNC_DEFAULT_PACE=rolling
 MAPBOX_ACCESS_TOKEN=<public hostname-restricted pk token, optional>
 ```
 
-The permanent `channels:read` token is read only by the Start server. `POST /api/live/<overlayId>/session` exchanges it for a five-minute viewer token and fetches one repeatable-read bootstrap with `Cache-Control: no-store`. Browser SSE uses the short-lived token only in an `Authorization` header and resumes from bootstrap `replayAfterEnvelopeId`, never from the latest phone-time metrics sample. Never place either token in an OBS URL.
+The permanent `channels:read` token is read only by the Start server. Same-origin session routes for share, embed, and legacy live pages exchange it for a five-minute viewer token and fetch one repeatable-read bootstrap with `Cache-Control: no-store`. Browser SSE uses the short-lived token only in an `Authorization` header and resumes from bootstrap `replayAfterEnvelopeId`, never from the latest phone-time metrics sample. Never place either token in an OBS URL.
+
+`RUNSYNC_SHARE_ID` and `RUNSYNC_EMBED_ID` fall back to `RUNSYNC_OVERLAY_ID` when omitted so existing deployments upgrade safely. Set distinct random UUIDs to rotate family and browser-source links independently.
 
 Route geometry is ordered by phone receipt time and envelope UUID. Bootstrap responses contain at most 5,000 deterministically sampled points, and the browser keeps the origin plus newest points when additional live samples exceed 5,000. This is a rendering bound only; it does not limit server ingestion or telemetry retention.
 
@@ -80,16 +90,20 @@ Route geometry is ordered by phone receipt time and envelope UUID. Bootstrap res
 ## Routes
 
 ```text
-/live/<overlayId>/preview
-/live/<overlayId>/map
-/live/<overlayId>/metrics?units=imperial&pace=rolling
-/live/<overlayId>/metric/pace
-/live/<overlayId>/metric/heart-rate
-/live/<overlayId>/metric/distance
+/
+/share/<shareId>
+/studio/<overlayId>
+/embed/<embedId>/map
+/embed/<embedId>/metrics?units=imperial&pace=rolling
+/embed/<embedId>/metric/pace
+/embed/<embedId>/metric/heart-rate
+/embed/<embedId>/metric/distance
 /api/health
 ```
 
-Supported query values are `units=imperial|metric` and `pace=rolling|average`; invalid values use deployment defaults. Unknown overlay and metric IDs return 404 without revealing deployment configuration.
+Supported query values are `units=imperial|metric` and `pace=rolling|average`; invalid values use deployment defaults. Unknown public and metric IDs return 404 without revealing deployment configuration.
+
+The previous `/live/<overlayId>/preview`, map, metrics, and individual-metric routes remain available for existing bookmarks and OBS sources. The legacy preview now generates `/embed/<embedId>/...` URLs.
 
 Recommended OBS sizes are listed on the preview page. Browser sources should use 30 FPS and “Refresh browser when scene becomes active.” Map and metric pages have transparent outer backgrounds.
 

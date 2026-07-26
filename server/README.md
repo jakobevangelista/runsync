@@ -7,6 +7,7 @@ The server is a Go 1.26 `net/http` service backed by PostgreSQL 18. It accepts e
 Enter the optional canonical tool environment with `nix develop`, or install Go 1.26 and a PostgreSQL 18 client directly. Create an untracked `.env` from `.env.example`, then create the secret files described in `docs/server-operations.md`. In particular, `postgres_password` must exactly match the password embedded in URL-encoded form in `runsync_database_url`. Bootstrap the database and credentials before starting the web service:
 
 ```sh
+docker build --pull --tag runsync-api:8e74040a2676 ./server
 docker compose up -d postgres
 docker compose --profile migration run --rm migrate
 docker compose run --rm api admin bootstrap-owner --handle owner --channel-slug live
@@ -18,6 +19,13 @@ test -n "$web_token"
 unset web_token
 docker compose up -d api web caddy cloudflared
 ```
+
+The image tag must match `RUNSYNC_API_IMAGE` in `.env` or Compose's documented
+default. The normal Compose file intentionally has no API build context:
+`docker compose up --build` may rebuild the web app, but cannot silently replace
+the pinned API. To deploy a later server revision, build it under a new
+commit-specific tag, update `RUNSYNC_API_IMAGE`, run migrations with that same
+image, and only then recreate `api`.
 
 Tokens are printed once. Put the iOS token directly in Keychain. The commands above extract only the value after `token=` into `secrets/runsync_web_read_token` before the web container starts; change that output path if `RUNSYNC_WEB_READ_TOKEN_FILE` selects another file. Compose mounts it server-side at `/run/secrets/runsync_web_read_token`. Do not add either token to `.env` or Compose configuration.
 

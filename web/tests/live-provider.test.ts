@@ -22,9 +22,13 @@ describe("live client replay recovery", () => {
     const controller = new AbortController();
     const cursor = { current: undefined as string | undefined };
     const seenHeaders: Array<string | null> = [];
+    const seenRequests: string[] = [];
     let call = 0;
-    const fetcher = vi.fn<typeof fetch>(async (_input, init) => {
+    const fetcher = vi.fn<typeof fetch>(async (input, init) => {
       call += 1;
+      seenRequests.push(
+        typeof input === "string" ? input : input instanceof URL ? input.href : input.url,
+      );
       if (call === 1) return Response.json(liveSession());
       seenHeaders.push(new Headers(init?.headers).get("Last-Event-ID"));
       if (call === 2) {
@@ -39,7 +43,7 @@ describe("live client replay recovery", () => {
     });
 
     await runLiveClient(
-      "overlay",
+      "/api/share/family/session",
       controller.signal,
       vi.fn<(action: ActivityAction) => void>(),
       vi.fn(),
@@ -48,6 +52,7 @@ describe("live client replay recovery", () => {
     );
 
     expect(fixtureSnapshot.latest!.envelopeId).not.toBe(fixtureReplayAfterEnvelopeId);
+    expect(seenRequests[0]).toBe("/api/share/family/session");
     expect(seenHeaders).toEqual([fixtureReplayAfterEnvelopeId, fixtureSnapshot.latest!.envelopeId]);
   });
 
@@ -65,7 +70,7 @@ describe("live client replay recovery", () => {
     });
 
     await runLiveClient(
-      "overlay",
+      "/api/embed/obs/session",
       controller.signal,
       vi.fn<(action: ActivityAction) => void>(),
       vi.fn(),

@@ -10,6 +10,7 @@ type MapMarkers = {
   current?: import("mapbox-gl").Marker;
   start?: import("mapbox-gl").Marker;
 };
+const FOLLOW_ZOOM = 14.5;
 
 export default function MapCanvas({ state, token }: { state: ActivityState; token: string }) {
   const container = useRef<HTMLDivElement>(null);
@@ -50,7 +51,7 @@ export default function MapCanvas({ state, token }: { state: ActivityState; toke
           container: container.current,
           style: "mapbox://styles/mapbox/dark-v11",
           center: first,
-          zoom: view.current.coordinates.length ? 14.5 : 2.5,
+          zoom: view.current.coordinates.length ? FOLLOW_ZOOM : 2.5,
           attributionControl: true,
           interactive: false,
           pitchWithRotate: false,
@@ -174,8 +175,14 @@ function syncMapView(
   }
 
   const now = Date.now();
-  if (!view.ended && now - lastCameraMove.current > 2500) {
-    map.easeTo({ center: current, duration: 1200, essential: false });
+  const initializingCamera = lastCameraMove.current === 0;
+  if (initializingCamera || (!view.ended && now - lastCameraMove.current > 2500)) {
+    map.easeTo({
+      center: current,
+      ...(initializingCamera ? { zoom: FOLLOW_ZOOM } : {}),
+      duration: 1200,
+      essential: false,
+    });
     lastCameraMove.current = now;
   }
 }

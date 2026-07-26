@@ -10,7 +10,7 @@ export const Route = createFileRoute("/live/$overlayId")({
 function LiveLayout() {
   const { overlayId } = Route.useParams();
   return (
-    <LiveProvider overlayId={overlayId}>
+    <LiveProvider audience="live" accessId={overlayId}>
       <Outlet />
     </LiveProvider>
   );

@@ -2,9 +2,9 @@
 
 ## Deployment
 
-1. Copy `.env.example` to untracked `.env`. Set distinct API and web hostnames, matching API public URLs, `RUNSYNC_ALLOWED_ORIGINS=https://<web-hostname>`, a random overlay UUID, and the remaining required values.
+1. Copy `.env.example` to untracked `.env`. Set distinct API and web hostnames, matching API public URLs, `RUNSYNC_ALLOWED_ORIGINS=https://<web-hostname>`, random and preferably distinct studio/overlay, share, and embed UUIDs, and the remaining required values. Existing deployments may omit the share and embed UUIDs temporarily; both then fall back to the overlay UUID.
 2. Create the files selected by `RUNSYNC_POSTGRES_PASSWORD_FILE`, `RUNSYNC_DATABASE_URL_FILE`, `RUNSYNC_VIEWER_TOKEN_SIGNING_KEY_FILE`, and `RUNSYNC_CLOUDFLARE_TOKEN_FILE`. The database URL file contains the full `postgres://runsync:<password>@postgres:5432/runsync?sslmode=disable` URL. The plaintext in `postgres_password` must exactly match the password embedded in the URL, with reserved characters percent-encoded in the URL. The viewer signing-key file contains base64 encoding of at least 32 random bytes, for example output from `openssl rand -base64 48`. Keep `.env` and `secrets/` untracked and make the files readable only by the deployment account.
-3. Start PostgreSQL and run `docker compose --profile migration run --rm migrate` before starting a new API image.
+3. Build the reviewed server revision under the commit-specific image tag selected by `RUNSYNC_API_IMAGE`. The current known-good pin is `docker build --pull --tag runsync-api:8e74040a2676 ./server`. Confirm the checked-out `server/` tree is that revision before building. Start PostgreSQL and run `docker compose --profile migration run --rm migrate`; `migrate` and `api` use the exact same pinned image.
 4. If this is a new database, run `docker compose run --rm api admin bootstrap-owner --handle owner --channel-slug live`. Channels default to hidden location. For the live map, explicitly run `docker compose run --rm api admin configure-channel --owner owner --slug live --location-policy precise`, or choose `rounded --coordinate-decimals <0..6>`. Then create the iOS and web credentials as shown in `server/README.md`. Write only the printed web token value to the path selected by `RUNSYNC_WEB_READ_TOKEN_FILE` before starting `web`; never start it with a placeholder or empty secret.
 5. In Cloudflare Zero Trust, open the existing named tunnel and add both public hostnames. Set each service URL to `http://caddy:8080`; keep the tunnel's final catch-all at `http_status:404`. Do not create a second tunnel. The unchanged `cloudflared` service token runs that named tunnel, while Caddy uses the trusted `Host` value to select `api:8080` or `web:3000` and rejects every other host.
 6. Create a Mapbox public `pk.*` token. Register the exact allowed URL `https://<web-hostname>` without a wildcard, grant only the styles/tile APIs used by Mapbox GL JS, configure usage alerts or limits, and set `MAPBOX_ACCESS_TOKEN`. The web response uses `Referrer-Policy: strict-origin-when-cross-origin` so Mapbox receives that origin for URL enforcement. This token is browser-visible by design; never use a Mapbox secret token.
@@ -12,6 +12,29 @@
 8. Verify the API `/healthz` and `/readyz`, web `/api/health`, preview route, Mapbox attribution, snapshot, full route, token refresh, and an authenticated SSE reconnect through their public hostnames. Compose gates `web` and Caddy on API readiness; web health is static liveness because web configuration and the server-only read-token file are validated at process startup.
 
 No service publishes a host port. For temporary local diagnostics, add a private override that maps Caddy as `127.0.0.1:8080:8080`; never publish PostgreSQL, the API origin, or the web origin.
+
+### Pinned API image
+
+`compose.yaml` deliberately does not contain `build:` for `api` or `migrate`.
+Both use `${RUNSYNC_API_IMAGE:-runsync-api:8e74040a2676}` with
+`pull_policy: never`. As a result, broad frontend iteration commands such as
+`docker compose up -d --build` cannot rebuild or retag the API from a stale
+working tree.
+
+To advance the server:
+
+1. Choose the reviewed server commit and a matching immutable tag, for example
+   `runsync-api:<12-character-commit>`.
+2. Check out or archive that exact revision and build its `server/` directory
+   under that tag.
+3. Set `RUNSYNC_API_IMAGE` in the deployment's untracked `.env` to the new tag.
+4. Run `docker compose --profile migration run --rm migrate`.
+5. Run `docker compose up -d api`.
+6. Verify the container image, migrations, readiness, and a real telemetry
+   acknowledgement before removing the previous local image.
+
+Never reuse a commit-specific tag for different source. Keep the previous image
+available until the new API and migration are verified.
 
 To use a shared Caddy, attach both `api` and `web` to the shared external proxy network, copy the host matchers from `server/Caddyfile`, point both tunnel hostnames at that Caddy, and omit the bundled `caddy` service. The API does not trust proxy headers unless the proxy address is included in `RUNSYNC_TRUSTED_PROXY_CIDRS`.
 

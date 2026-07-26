@@ -121,6 +121,23 @@ describe("MapCanvas", () => {
     });
   });
 
+  it("sets the follow zoom when route data arrives after map initialization", async () => {
+    const waiting = { ...initialActivityState, activityId: firstActivity };
+    const { rerender } = render(<MapCanvas state={waiting} token="pk.test" />);
+    await waitFor(() => expect(mapbox.maps).toHaveLength(1));
+    expect(mapbox.maps[0]?.easeTo).not.toHaveBeenCalled();
+
+    rerender(<MapCanvas state={mapState(firstActivity)} token="pk.test" />);
+    await waitFor(() =>
+      expect(mapbox.maps[0]?.easeTo).toHaveBeenCalledWith({
+        center: [-122.0001, 37.0001],
+        zoom: 14.5,
+        duration: 1200,
+        essential: false,
+      }),
+    );
+  });
+
   it("resets and repositions markers across activities, map recreation, and an empty route", async () => {
     const { rerender } = render(<MapCanvas state={mapState(firstActivity)} token="pk.test" />);
     await waitFor(() => expect(mapbox.markers).toHaveLength(2));

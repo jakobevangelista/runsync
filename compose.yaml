@@ -16,7 +16,8 @@ services:
     networks: [backend]
     restart: unless-stopped
   migrate:
-    build: {context: ./server}
+    image: ${RUNSYNC_API_IMAGE:-runsync-api:8e74040a2676}
+    pull_policy: never
     user: ${RUNSYNC_RUNTIME_USER:-1000:100}
     command: [migrate]
     environment:
@@ -44,7 +45,8 @@ services:
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
   api:
-    build: {context: ./server}
+    image: ${RUNSYNC_API_IMAGE:-runsync-api:8e74040a2676}
+    pull_policy: never
     user: ${RUNSYNC_RUNTIME_USER:-1000:100}
     read_only: true
     tmpfs: [/tmp]
@@ -82,6 +84,8 @@ services:
       RUNSYNC_API_READ_TOKEN_FILE: /run/secrets/runsync_web_read_token
       RUNSYNC_CHANNEL_SLUG: ${RUNSYNC_CHANNEL_SLUG:-live}
       RUNSYNC_OVERLAY_ID: ${RUNSYNC_OVERLAY_ID:?set RUNSYNC_OVERLAY_ID}
+      RUNSYNC_SHARE_ID: ${RUNSYNC_SHARE_ID:-}
+      RUNSYNC_EMBED_ID: ${RUNSYNC_EMBED_ID:-}
       RUNSYNC_DEFAULT_UNITS: ${RUNSYNC_DEFAULT_UNITS:-imperial}
       RUNSYNC_DEFAULT_PACE: ${RUNSYNC_DEFAULT_PACE:-rolling}
       MAPBOX_ACCESS_TOKEN: ${MAPBOX_ACCESS_TOKEN:-}
