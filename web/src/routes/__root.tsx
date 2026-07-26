@@ -2,6 +2,20 @@ import { HeadContent, Scripts, createRootRoute } from "@tanstack/react-router";
 
 import appCss from "../styles.css?url";
 
+const themeScript = `
+(() => {
+  try {
+    const saved = localStorage.getItem("runsync-theme");
+    const dark = saved === "dark" ||
+      (saved === null && matchMedia("(prefers-color-scheme: dark)").matches);
+    document.documentElement.classList.toggle("dark", dark);
+    document.documentElement.style.colorScheme = dark ? "dark" : "light";
+    document.querySelector('meta[name="theme-color"]')
+      ?.setAttribute("content", dark ? "#1c1916" : "#f7f3eb");
+  } catch {}
+})();
+`;
+
 export const Route = createRootRoute({
   head: () => ({
     meta: [
@@ -14,6 +28,14 @@ export const Route = createRootRoute({
       },
       {
         title: "RunSync Live",
+      },
+      {
+        name: "description",
+        content: "Follow a live run and see the completed route and metrics in one shared link.",
+      },
+      {
+        name: "theme-color",
+        content: "#f7f3eb",
       },
       {
         name: "referrer",
@@ -33,9 +55,10 @@ export const Route = createRootRoute({
 
 function RootDocument({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <head>
         <HeadContent />
+        <script dangerouslySetInnerHTML={{ __html: themeScript }} />
       </head>
       <body>
         {children}

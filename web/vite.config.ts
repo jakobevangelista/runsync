@@ -1,5 +1,6 @@
 import { defineConfig } from "vite-plus";
 import { tanstackStart } from "@tanstack/react-start/plugin/vite";
+import tailwindcss from "@tailwindcss/vite";
 import { nitro } from "nitro/vite";
 import viteReact from "@vitejs/plugin-react";
 
@@ -18,7 +19,7 @@ const appPlugins = process.env.VITEST
 export default defineConfig({
   server: { port: 3000 },
   resolve: { tsconfigPaths: true },
-  plugins: appPlugins,
+  plugins: [tailwindcss(), ...appPlugins],
   lint: {
     ignorePatterns: [".output/**", "src/routeTree.gen.ts"],
     options: { typeAware: true, typeCheck: true },

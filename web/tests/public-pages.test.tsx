@@ -1,11 +1,15 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 import { Landing } from "../src/components/Landing";
 import { describeSharedRun } from "../src/components/SharedRun";
 import { initialActivityState, type ActivityState } from "../src/lib/activity-store";
 import { liveSessionPath } from "../src/lib/live-access";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  document.documentElement.classList.remove("dark");
+  window.localStorage.removeItem("runsync-theme");
+});
 
 describe("public page hierarchy", () => {
   it("keeps the family action primary and broadcast tools secondary", () => {
@@ -16,6 +20,13 @@ describe("public page hierarchy", () => {
     expect(screen.getByRole("link", { name: /broadcast tools/i }).getAttribute("href")).toBe(
       "/studio/studio-id",
     );
+  });
+
+  it("persists an explicit dark mode preference", () => {
+    render(<Landing shareId="family-id" studioId="studio-id" />);
+    fireEvent.click(screen.getByRole("button", { name: /toggle color theme/i }));
+    expect(document.documentElement.classList.contains("dark")).toBe(true);
+    expect(window.localStorage.getItem("runsync-theme")).toBe("dark");
   });
 
   it("uses separate session namespaces for viewers and browser sources", () => {

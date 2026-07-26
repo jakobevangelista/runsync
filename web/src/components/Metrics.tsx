@@ -1,5 +1,8 @@
+import { Activity, Clock3, Gauge, HeartPulse, MapPin, Mountain } from "lucide-react";
+
 import type { ActivityState } from "../lib/activity-store";
 import type { PaceMode, Units } from "../lib/contracts";
+import { cn } from "../lib/utils";
 import {
   averagePace,
   formatDistance,
@@ -37,15 +40,60 @@ export function MetricCounter({
   accent: "lime" | "coral" | "cyan";
   compact?: boolean;
 }) {
+  const accentStyles = {
+    lime: {
+      icon: Gauge,
+      iconClassName: "bg-primary/10 text-primary",
+      lineClassName: "bg-primary",
+    },
+    coral: {
+      icon: HeartPulse,
+      iconClassName: "bg-heart/10 text-heart",
+      lineClassName: "bg-heart",
+    },
+    cyan: {
+      icon: MapPin,
+      iconClassName: "bg-route/10 text-route",
+      lineClassName: "bg-route",
+    },
+  } as const;
+  const styles = accentStyles[accent];
+  const Icon = styles.icon;
   return (
     <section
-      className={`metric metric--${accent}${compact ? " metric--solo" : ""}`}
+      className={cn(
+        "group/metric relative min-w-0 overflow-hidden bg-card p-5 @lg:p-6",
+        compact &&
+          "flex h-full min-h-0 flex-col justify-center rounded-2xl border border-foreground/10 p-[clamp(1.25rem,7vmin,3rem)] shadow-sm",
+      )}
       aria-label={label}
     >
-      <span className="metric__label">{label}</span>
-      <div className="metric__reading">
-        <strong>{value}</strong>
-        <span>{unit}</span>
+      <span className={cn("absolute inset-x-0 bottom-0 h-0.5 opacity-80", styles.lineClassName)} />
+      <div className="mb-7 flex items-center justify-between gap-3">
+        <span className="text-[11px] font-medium tracking-[0.08em] text-muted-foreground uppercase">
+          {label}
+        </span>
+        <span className={cn("grid size-8 place-items-center rounded-lg", styles.iconClassName)}>
+          <Icon className="size-4" strokeWidth={2} />
+        </span>
+      </div>
+      <div className="flex min-w-0 items-baseline gap-2">
+        <strong
+          className={cn(
+            "metric-value min-w-0 text-[clamp(2.55rem,14cqw,5.2rem)] leading-[0.8] font-semibold tracking-[-0.07em] text-foreground",
+            compact && "text-[clamp(3.5rem,30vmin,15rem)]",
+          )}
+        >
+          {value}
+        </strong>
+        <span
+          className={cn(
+            "shrink-0 text-xs font-medium text-muted-foreground",
+            compact && "text-[clamp(0.75rem,4vmin,1.5rem)]",
+          )}
+        >
+          {unit}
+        </span>
       </div>
     </section>
   );
@@ -62,13 +110,15 @@ export function MetricsPanel({
 }) {
   const values = metricsFor(state, units, paceMode);
   return (
-    <div className="metrics-panel">
-      <div className="metrics-panel__signal">
+    <div className="@container overflow-hidden rounded-2xl border border-foreground/10 bg-card shadow-[0_20px_60px_rgb(45_37_24/9%)]">
+      <div className="flex min-h-14 items-center gap-2 border-b border-border/80 px-5">
         <span className={`signal signal--${state.connection}`} />
-        <span>{values.activity}</span>
-        <small>{state.connection}</small>
+        <span className="text-xs font-semibold capitalize">{values.activity}</span>
+        <span className="ml-auto text-[11px] font-medium tracking-[0.08em] text-muted-foreground uppercase">
+          {state.connection}
+        </span>
       </div>
-      <div className="metrics-panel__primary">
+      <div className="grid grid-cols-1 divide-y divide-border/80 @lg:grid-cols-3 @lg:divide-x @lg:divide-y-0">
         <MetricCounter
           label={paceMode === "rolling" ? "Pace · 10 sec" : "Pace · average"}
           {...values.pace}
@@ -77,13 +127,18 @@ export function MetricsPanel({
         <MetricCounter label="Heart rate" {...values.heartRate} accent="coral" />
         <MetricCounter label="Distance" {...values.distance} accent="cyan" />
       </div>
-      <div className="metrics-panel__secondary">
-        <Secondary label="Elapsed" value={values.elapsed} />
+      <div className="grid grid-cols-1 divide-y divide-border/80 border-t border-border/80 bg-muted/40 @sm:grid-cols-3 @sm:divide-x @sm:divide-y-0">
+        <Secondary icon={Clock3} label="Elapsed" value={values.elapsed} />
         <Secondary
+          icon={Mountain}
           label="Altitude"
           value={`${values.elevation.altitude} ${values.elevation.unit}`}
         />
-        <Secondary label="Ascent" value={`${values.elevation.ascent} ${values.elevation.unit}`} />
+        <Secondary
+          icon={Activity}
+          label="Ascent"
+          value={`${values.elevation.ascent} ${values.elevation.unit}`}
+        />
       </div>
     </div>
   );
@@ -117,11 +172,24 @@ export function IndividualMetric({
   return <MetricCounter label="Distance" {...values.distance} accent="cyan" compact />;
 }
 
-function Secondary({ label, value }: { label: string; value: string }) {
+function Secondary({
+  icon: Icon,
+  label,
+  value,
+}: {
+  icon: typeof Clock3;
+  label: string;
+  value: string;
+}) {
   return (
-    <div>
-      <span>{label}</span>
-      <strong>{value}</strong>
+    <div className="flex items-center gap-3 px-5 py-4">
+      <Icon className="size-3.5 shrink-0 text-muted-foreground" strokeWidth={2} />
+      <span className="text-[10px] font-medium tracking-[0.08em] text-muted-foreground uppercase">
+        {label}
+      </span>
+      <strong className="metric-value ml-auto text-sm font-semibold tracking-[-0.02em]">
+        {value}
+      </strong>
     </div>
   );
 }

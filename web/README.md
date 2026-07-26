@@ -8,6 +8,8 @@ TanStack Start landing page, shareable current-run viewer, and browser-source ov
 - pnpm `11.13.0`, managed through Vite+
 - Vite+ `0.2.4` with its bundled Vite/Vitest/Oxlint/Oxfmt toolchain
 - TanStack Start `1.168.28`, TanStack Router `1.170.18`, React `19.2.7`
+- Tailwind CSS `4.3.3` through the first-party Vite plugin
+- shadcn/ui open-code primitives configured by `components.json`
 
 Use Vite+ rather than package-manager scripts:
 
@@ -20,6 +22,16 @@ vp build
 ```
 
 No standalone ESLint, Prettier, Vite, or Vitest configuration is used.
+
+The shadcn components live in `src/components/ui`; they are application source,
+not an opaque component package. Global design tokens and the small amount of
+Mapbox/OBS-specific CSS that cannot be expressed cleanly as utilities live in
+`src/styles.css`.
+
+Public and studio pages follow the visitor's system color scheme until the
+light/dark toggle is used, then persist that choice in local storage. OBS
+browser-source routes deliberately remain light so an operator's browser
+preference cannot alter an existing scene.
 
 ## Local Fixture Mode
 

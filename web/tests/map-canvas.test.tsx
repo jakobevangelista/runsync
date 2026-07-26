@@ -14,7 +14,7 @@ const mapbox = vi.hoisted(() => {
     remove = vi.fn();
     easeTo = vi.fn();
 
-    constructor() {
+    constructor(public options: { style: string }) {
       maps.push(this);
     }
 
@@ -104,7 +104,10 @@ beforeEach(() => {
   vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as WebGL2RenderingContext);
 });
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  document.documentElement.classList.remove("dark");
+});
 
 describe("MapCanvas", () => {
   it("uses an empty FeatureCollection until a LineString has two points", () => {
@@ -136,6 +139,17 @@ describe("MapCanvas", () => {
         essential: false,
       }),
     );
+  });
+
+  it("switches the interactive map style with the page theme", async () => {
+    document.documentElement.classList.add("dark");
+    render(<MapCanvas state={mapState(firstActivity)} token="pk.test" />);
+    await waitFor(() => expect(mapbox.maps).toHaveLength(1));
+    expect(mapbox.maps[0]?.options.style).toBe("mapbox://styles/mapbox/dark-v11");
+
+    act(() => document.documentElement.classList.remove("dark"));
+    await waitFor(() => expect(mapbox.maps).toHaveLength(2));
+    expect(mapbox.maps[1]?.options.style).toBe("mapbox://styles/mapbox/light-v11");
   });
 
   it("resets and repositions markers across activities, map recreation, and an empty route", async () => {

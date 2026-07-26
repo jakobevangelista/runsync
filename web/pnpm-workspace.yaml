@@ -11,5 +11,6 @@ minimumReleaseAgeExclude:
   - "@tanstack/start-plugin-core@1.171.20"
   - "@tanstack/start-server-core@1.169.17"
   - "@tanstack/start-storage-context@1.167.17"
+  - lucide-react@1.27.0
 onlyBuiltDependencies:
   - esbuild

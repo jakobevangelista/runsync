@@ -19,6 +19,7 @@ export default function MapCanvas({ state, token }: { state: ActivityState; toke
   const lastCameraMove = useRef(0);
   const [error, setError] = useState<string | undefined>(undefined);
   const [generation, setGeneration] = useState(0);
+  const [darkMode, setDarkMode] = useState(prefersDarkMap);
   const coordinates = state.route.map(
     (point) =>
       [
@@ -32,6 +33,12 @@ export default function MapCanvas({ state, token }: { state: ActivityState; toke
     ended: state.latest?.state === 4,
   });
   view.current = { activityId: state.activityId, coordinates, ended: state.latest?.state === 4 };
+
+  useEffect(() => {
+    const observer = new MutationObserver(() => setDarkMode(prefersDarkMap()));
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     if (!token || !container.current) return;
@@ -49,7 +56,7 @@ export default function MapCanvas({ state, token }: { state: ActivityState; toke
         const first = view.current.coordinates[0] ?? [-98.5, 39.8];
         const map = new mapboxgl.Map({
           container: container.current,
-          style: "mapbox://styles/mapbox/dark-v11",
+          style: darkMode ? "mapbox://styles/mapbox/dark-v11" : "mapbox://styles/mapbox/light-v11",
           center: first,
           zoom: view.current.coordinates.length ? FOLLOW_ZOOM : 2.5,
           attributionControl: true,
@@ -67,13 +74,17 @@ export default function MapCanvas({ state, token }: { state: ActivityState; toke
             id: "run-casing",
             type: "line",
             source: "run",
-            paint: { "line-color": "#061012", "line-width": 10, "line-opacity": 0.85 },
+            paint: {
+              "line-color": darkMode ? "#211e1a" : "#fffdf8",
+              "line-width": 11,
+              "line-opacity": 0.94,
+            },
           });
           map.addLayer({
             id: "run-line",
             type: "line",
             source: "run",
-            paint: { "line-color": "#b8ff3d", "line-width": 5, "line-opacity": 0.98 },
+            paint: { "line-color": "#e86238", "line-width": 5, "line-opacity": 1 },
           });
           syncMapView(map, mapboxgl, view.current, markers.current, lastCameraMove);
         });
@@ -90,8 +101,8 @@ export default function MapCanvas({ state, token }: { state: ActivityState; toke
       mapRef.current?.remove();
       mapRef.current = undefined;
     };
-    // The map instance is intentionally created once per token.
-  }, [token, generation]);
+    // The map instance is intentionally recreated only for token, theme, or WebGL changes.
+  }, [token, generation, darkMode]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -111,14 +122,19 @@ export default function MapCanvas({ state, token }: { state: ActivityState; toke
       />
     );
   return (
-    <div className="map-canvas-wrap">
-      <div className="map-canvas" ref={container} />
-      <div className="map-state">
+    <div className="relative h-full min-h-60 w-full overflow-hidden rounded-[inherit] bg-map">
+      <div className="map-canvas h-full w-full" ref={container} />
+      <div className="absolute top-4 left-4 flex items-center gap-2 rounded-full border border-border bg-card/92 px-3 py-2 text-[10px] font-semibold tracking-[0.08em] text-foreground uppercase shadow-sm backdrop-blur">
         <span className={`signal signal--${state.connection}`} />
         {state.connection}
       </div>
     </div>
   );
+}
+
+function prefersDarkMap() {
+  const isBrowserSource = /^\/(?:embed|live)\/[^/]+\/map\/?$/.test(window.location.pathname);
+  return !isBrowserSource && document.documentElement.classList.contains("dark");
 }
 
 export function routeData(coordinates: Coordinate[]) {
