@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 import { Landing } from "../src/components/Landing";
 import { describeSharedRun } from "../src/components/SharedRun";
+import { STREAMSYNC_PROGRAM_URL, StreamsyncPlayer } from "../src/components/StreamsyncPlayer";
 import { initialActivityState, type ActivityState } from "../src/lib/activity-store";
 import { liveSessionPath } from "../src/lib/live-access";
 
@@ -27,6 +28,16 @@ describe("public page hierarchy", () => {
     fireEvent.click(screen.getByRole("button", { name: /toggle color theme/i }));
     expect(document.documentElement.classList.contains("dark")).toBe(true);
     expect(window.localStorage.getItem("runsync-theme")).toBe("dark");
+  });
+
+  it("embeds the stable public Streamsync program output", () => {
+    render(<StreamsyncPlayer />);
+    const player = screen.getByTitle("Live video");
+    expect(player.getAttribute("src")).toBe(STREAMSYNC_PROGRAM_URL);
+    expect(STREAMSYNC_PROGRAM_URL).toContain(
+      "?controls=true&muted=true&autoplay=true&playsinline=true",
+    );
+    expect(player.getAttribute("allow")).toBe("autoplay; fullscreen; picture-in-picture");
   });
 
   it("uses separate session namespaces for viewers and browser sources", () => {

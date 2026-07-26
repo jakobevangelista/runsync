@@ -33,6 +33,11 @@ light/dark toggle is used, then persist that choice in local storage. OBS
 browser-source routes deliberately remain light so an operator's browser
 preference cannot alter an existing scene.
 
+The family share page embeds the stable public Streamsync program output from
+`media.streamsync.studio` above the route and metrics. The program URL is
+unlisted rather than authenticated and is currently configured in
+`src/components/StreamsyncPlayer.tsx`.
+
 ## Local Fixture Mode
 
 The app and tests work without a RunSync API credential or Mapbox token. Fixture mode serves a realistic bootstrap and renders the styled map fallback:

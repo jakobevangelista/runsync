@@ -54,6 +54,8 @@ export default function MapCanvas({ state, token }: { state: ActivityState; toke
         if (disposed || !container.current) return;
         mapboxgl.accessToken = token;
         const first = view.current.coordinates[0] ?? [-98.5, 39.8];
+        const routeColor =
+          getComputedStyle(container.current).getPropertyValue("--primary").trim() || "#e86238";
         const map = new mapboxgl.Map({
           container: container.current,
           style: darkMode ? "mapbox://styles/mapbox/dark-v11" : "mapbox://styles/mapbox/light-v11",
@@ -84,7 +86,7 @@ export default function MapCanvas({ state, token }: { state: ActivityState; toke
             id: "run-line",
             type: "line",
             source: "run",
-            paint: { "line-color": "#e86238", "line-width": 5, "line-opacity": 1 },
+            paint: { "line-color": routeColor, "line-width": 5, "line-opacity": 1 },
           });
           syncMapView(map, mapboxgl, view.current, markers.current, lastCameraMove);
         });

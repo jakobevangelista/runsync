@@ -1,15 +1,14 @@
 import { useEffect, useState } from "react";
-import { Clock3, Eye, Radio } from "lucide-react";
+import { Clock3, Eye, MapPinned, Radio, Volume2 } from "lucide-react";
 
 import type { ActivityState } from "../lib/activity-store";
 import type { PaceMode, Units } from "../lib/contracts";
-import { cn } from "../lib/utils";
 import { Brand } from "./Brand";
 import { MapPanel } from "./MapPanel";
 import { MetricsPanel } from "./Metrics";
+import { StreamsyncPlayer } from "./StreamsyncPlayer";
 import { ThemeToggle } from "./ThemeToggle";
 import { useLive } from "./LiveProvider";
-import { Badge } from "./ui/badge";
 import { Card } from "./ui/card";
 
 export function SharedRun({
@@ -22,61 +21,64 @@ export function SharedRun({
   const { state } = useLive();
   const presentation = describeSharedRun(state);
   return (
-    <main className="min-h-svh bg-background text-foreground">
-      <div className="mx-auto w-full max-w-[90rem] px-4 py-4 sm:px-7 sm:py-6 lg:px-10">
-        <header className="flex items-center justify-between gap-4 border-b border-border/70 pb-5">
+    <main className="share-page min-h-svh bg-background text-foreground dark:bg-[#141312]">
+      <div className="mx-auto w-full max-w-[90rem] px-4 sm:px-7 lg:px-8">
+        <header className="flex h-18 items-center justify-between gap-4 border-b-2 border-foreground/20">
           <Brand />
-          <div className="flex items-center gap-1">
-            <ThemeToggle />
-            <Badge
-              variant="outline"
-              className={cn(
-                "h-7 gap-2 border-border bg-card px-3 shadow-xs",
-                presentation.tone === "live" && "border-live/20 bg-live/8 text-live",
-                presentation.tone === "complete" &&
-                  "border-complete/20 bg-complete/8 text-complete",
-              )}
-            >
-              <span className={`signal signal--${state.connection}`} />
-              {presentation.label}
-            </Badge>
-          </div>
+          <ThemeToggle />
         </header>
 
-        <section className="grid gap-6 py-10 sm:py-12 lg:grid-cols-[minmax(0,1fr)_minmax(260px,0.38fr)] lg:items-end">
-          <div>
-            <p className="flex items-center gap-2 text-xs font-medium tracking-[0.13em] text-primary uppercase">
+        <section className="py-6 sm:py-8">
+          <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <p className="m-0 flex items-center gap-2 text-xs font-medium tracking-[0.13em] text-primary uppercase">
               <Radio className="size-3.5" />
-              Current run
+              Live stream
             </p>
-            <h1 className="mt-4 max-w-[15ch] text-4xl leading-[0.98] font-semibold tracking-[-0.055em] text-balance sm:text-6xl lg:text-7xl">
-              {presentation.heading}
-            </h1>
+            <p className="m-0 flex items-center gap-2 text-xs text-muted-foreground">
+              <Volume2 className="size-3.5" />
+              Muted by default · Use player controls for sound
+            </p>
           </div>
-          <div className="border-l-2 border-primary pl-5">
-            <p className="m-0 text-sm leading-6 text-muted-foreground">{presentation.detail}</p>
-            <p className="mt-3 flex items-center gap-2 text-xs text-muted-foreground">
+          <StreamsyncPlayer className="border-b-0" />
+          <div className="grid gap-3 border-2 border-foreground/25 bg-card px-5 py-4 sm:grid-cols-[auto_minmax(0,1fr)_auto] sm:items-center sm:gap-5 dark:bg-[#141312]">
+            <div className="flex items-center gap-2">
+              <span className={`signal signal--${state.connection}`} />
+              <strong className="text-xs font-semibold tracking-[0.08em] uppercase">
+                {presentation.label}
+              </strong>
+            </div>
+            <p className="m-0 text-xs leading-5 text-muted-foreground">{presentation.detail}</p>
+            <p className="m-0 flex items-center gap-2 text-xs text-muted-foreground">
               <Clock3 className="size-3.5" />
-              Last update <SampleAge receivedAt={state.sampleReceivedAt} />
+              Updated <SampleAge receivedAt={state.sampleReceivedAt} />
             </p>
           </div>
         </section>
 
+        <div className="mb-3 flex items-center gap-2 text-xs font-medium tracking-[0.13em] text-primary uppercase">
+          <MapPinned className="size-3.5" />
+          Route and run data
+        </div>
         <section
-          className="grid gap-4 xl:grid-cols-[minmax(0,1.55fr)_minmax(330px,0.62fr)]"
+          className="grid overflow-hidden border-2 border-foreground/25 xl:grid-cols-[minmax(0,1fr)_360px]"
           aria-label="Run route and metrics"
         >
-          <Card className="relative min-h-[31rem] overflow-hidden border-foreground/10 bg-card py-0 shadow-[0_24px_70px_rgb(45_37_24/10%)] sm:min-h-[38rem]">
+          <Card className="relative min-h-[25rem] overflow-hidden rounded-none border-0 border-b-2 border-foreground/25 bg-card py-0 shadow-none sm:min-h-[32rem] xl:border-r-2 xl:border-b-0 dark:bg-[#141312]">
             <div className="absolute inset-0">
               <MapPanel />
             </div>
           </Card>
           <div className="min-w-0">
-            <MetricsPanel state={state} units={defaultUnits} paceMode={defaultPace} />
+            <MetricsPanel
+              state={state}
+              units={defaultUnits}
+              paceMode={defaultPace}
+              variant="ledger"
+            />
           </div>
         </section>
 
-        <footer className="mt-5 flex flex-col gap-3 border-t border-border/70 py-5 text-xs text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
+        <footer className="mt-6 flex flex-col gap-3 border-t-2 border-foreground/20 py-5 text-[10px] tracking-[0.08em] text-muted-foreground uppercase sm:flex-row sm:items-center sm:justify-between">
           <span>Live telemetry from Garmin via RunSync.</span>
           <span className="inline-flex items-center gap-2">
             <Eye className="size-3.5" />
@@ -93,7 +95,6 @@ export function describeSharedRun(state: ActivityState) {
   if (sampleState === 4) {
     return {
       label: "Run completed",
-      heading: "That’s a wrap.",
       detail: "The final route and run metrics remain available here.",
       tone: "complete",
     } as const;
@@ -101,7 +102,6 @@ export function describeSharedRun(state: ActivityState) {
   if (state.connection === "stale" || state.connection === "reconnecting") {
     return {
       label: "Signal delayed",
-      heading: "Holding the latest update.",
       detail: "The route will catch up automatically when the connection returns.",
       tone: "delayed",
     } as const;
@@ -109,7 +109,6 @@ export function describeSharedRun(state: ActivityState) {
   if (sampleState === 1) {
     return {
       label: "Live now",
-      heading: "The run is underway.",
       detail: "Route and metrics update automatically as new telemetry arrives.",
       tone: "live",
     } as const;
@@ -117,7 +116,6 @@ export function describeSharedRun(state: ActivityState) {
   if (sampleState === 2) {
     return {
       label: "Paused",
-      heading: "Taking a breather.",
       detail: "The run can resume from the same route and activity.",
       tone: "paused",
     } as const;
@@ -125,7 +123,6 @@ export function describeSharedRun(state: ActivityState) {
   if (sampleState === 3) {
     return {
       label: "Stopped",
-      heading: "The timer is stopped.",
       detail: "The run may resume or finish from here.",
       tone: "paused",
     } as const;
@@ -133,14 +130,12 @@ export function describeSharedRun(state: ActivityState) {
   if (state.connection === "connecting") {
     return {
       label: "Connecting",
-      heading: "Finding the current run.",
       detail: "This page will update automatically.",
       tone: "delayed",
     } as const;
   }
   return {
     label: "No run yet",
-    heading: "Ready for the next run.",
     detail: "Come back when the activity starts.",
     tone: "idle",
   } as const;

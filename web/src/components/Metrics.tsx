@@ -103,12 +103,48 @@ export function MetricsPanel({
   state,
   units,
   paceMode,
+  variant = "card",
 }: {
   state: ActivityState;
   units: Units;
   paceMode: PaceMode;
+  variant?: "card" | "ledger";
 }) {
   const values = metricsFor(state, units, paceMode);
+  if (variant === "ledger") {
+    return (
+      <div className="h-full bg-card dark:bg-[#141312]">
+        <div className="flex min-h-14 items-center gap-2 border-b-2 border-foreground/25 px-5">
+          <span className={`signal signal--${state.connection}`} />
+          <span className="text-xs font-semibold tracking-[0.08em] uppercase">
+            {values.activity}
+          </span>
+          <span className="ml-auto text-[10px] font-medium tracking-[0.12em] text-muted-foreground uppercase">
+            {state.connection}
+          </span>
+        </div>
+        <div className="grid grid-cols-2">
+          <LedgerMetric
+            label={paceMode === "rolling" ? "Pace · 10 sec" : "Pace · average"}
+            {...values.pace}
+          />
+          <LedgerMetric label="Heart rate" {...values.heartRate} />
+          <LedgerMetric label="Distance" {...values.distance} />
+          <LedgerMetric label="Elapsed" value={values.elapsed} />
+          <LedgerMetric
+            label="Altitude"
+            value={values.elevation.altitude}
+            unit={values.elevation.unit}
+          />
+          <LedgerMetric
+            label="Ascent"
+            value={values.elevation.ascent}
+            unit={values.elevation.unit}
+          />
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="@container overflow-hidden rounded-2xl border border-foreground/10 bg-card shadow-[0_20px_60px_rgb(45_37_24/9%)]">
       <div className="flex min-h-14 items-center gap-2 border-b border-border/80 px-5">
@@ -140,6 +176,28 @@ export function MetricsPanel({
           value={`${values.elevation.ascent} ${values.elevation.unit}`}
         />
       </div>
+    </div>
+  );
+}
+
+function LedgerMetric({
+  label,
+  value,
+  unit = "",
+}: {
+  label: string;
+  value: string;
+  unit?: string;
+}) {
+  return (
+    <div className="flex min-h-36 flex-col justify-between gap-6 border-r border-b border-foreground/20 p-5 even:border-r-0">
+      <span className="text-[10px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
+        {label}
+      </span>
+      <span className="metric-value flex items-baseline gap-1.5">
+        <strong className="text-4xl leading-none font-semibold tracking-[-0.055em]">{value}</strong>
+        {unit ? <span className="text-[11px] text-muted-foreground">{unit}</span> : null}
+      </span>
     </div>
   );
 }

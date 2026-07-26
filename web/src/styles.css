@@ -134,6 +134,11 @@
   font-size: 0.875rem;
 }
 
+.share-page {
+  --primary: #ec3013;
+  --ring: #ec3013;
+}
+
 .overlay-page {
   color-scheme: light;
   --background: oklch(0.976 0.009 87);
